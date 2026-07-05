@@ -10,7 +10,8 @@ const appointmentSchema = new mongoose.Schema(
     beautician: { type: String, required: true, index: true },
     price: { type: Number, default: 0 },
     duration: { type: Number, default: 60 },
-    status: { type: String, enum: ["booked", "cancelled", "completed"], default: "booked" },
+    status: { type: String, enum: ["booked", "cancelled", "completed", "no_show"], default: "booked" },
+    earningsAmount: { type: Number, default: 0 },
   },
   { id: false, versionKey: false },
 );

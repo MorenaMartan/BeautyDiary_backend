@@ -34,6 +34,7 @@ export async function createAppointment(req, res) {
     price: req.body.price ?? treatment?.price ?? 0,
     duration: req.body.duration ?? treatment?.duration ?? 60,
     status: req.body.status || "booked",
+    earningsAmount: req.body.earningsAmount || 0,
   };
 
   if (!appointment.client_name || !appointment.treatment || !appointment.dayandhour || !appointment.beautician) {
@@ -86,7 +87,6 @@ export async function getAvailability(req, res) {
 
   const employees = await models.Employee.find({ specialties: selectedTreatment.specialty }).lean();
   const appointments = await models.Appointment.find({
-    status: { $ne: "cancelled" },
     dayandhour: new RegExp(`^${escapeRegex(date)}`),
   }).lean();
 
@@ -113,6 +113,7 @@ function getAvailableTimes(employee, date, duration, appointments) {
   for (let minutes = start; minutes + duration <= end; minutes += 15) {
     const time = toTime(minutes);
     const overlapsExisting = appointments.some((appointment) => {
+      if (!isBlockingAppointment(appointment)) return false;
       if (appointment.beautician !== employee.name) return false;
 
       const [appointmentDate, appointmentTime] = appointment.dayandhour.split(" ");
@@ -130,15 +131,20 @@ function getAvailableTimes(employee, date, duration, appointments) {
 async function isAppointmentOverlapping(appointment) {
   const [date, time] = appointment.dayandhour.split(" ");
   const appointments = await models.Appointment.find({
-    status: { $ne: "cancelled" },
     beautician: appointment.beautician,
     dayandhour: new RegExp(`^${escapeRegex(date)}`),
   }).lean();
 
   return appointments.some((existing) => {
+    if (!isBlockingAppointment(existing)) return false;
+
     const [, existingTime] = existing.dayandhour.split(" ");
     return overlaps(time, appointment.duration, existingTime, existing.duration || 60);
   });
+}
+
+function isBlockingAppointment(appointment) {
+  return appointment.status !== "cancelled" || Number(appointment.earningsAmount || 0) > 0;
 }
 
 function escapeRegex(value) {
