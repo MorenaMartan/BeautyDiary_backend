@@ -10,6 +10,7 @@ const dayScheduleSchema = new mongoose.Schema(
 
 const reviewSchema = new mongoose.Schema(
   {
+    appointmentId: { type: Number, required: true },
     client: { type: String, required: true },
     rating: { type: Number, required: true },
     comment: { type: String, default: "" },

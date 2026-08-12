@@ -17,14 +17,42 @@ export async function getReviews(req, res) {
 }
 
 export async function createReview(req, res) {
+  if (req.user.role !== "Client") {
+    return res.status(403).json({ message: "Only clients can create reviews" });
+  }
+
+  const appointmentId = Number(req.body.appointmentId);
+  const client = await models.Client.findOne({ id: req.user.id }).lean();
+  const appointment = await models.Appointment.findOne({ id: appointmentId }).lean();
+
+  if (
+    !client ||
+    !appointment ||
+    appointment.status !== "completed" ||
+    appointment.beautician !== req.params.employee ||
+    appointment.client_name !== client.name ||
+    appointment.client_surname !== client.surname
+  ) {
+    return res.status(403).json({ message: "Reviews can be created only for your completed appointments" });
+  }
+
   const review = {
-    client: req.body.client,
+    appointmentId,
+    client: `${client.name} ${client.surname}`.trim(),
     rating: Number(req.body.rating),
     comment: req.body.comment || "",
   };
 
   if (!review.client || !review.rating) {
     return res.status(400).json({ message: "Client and rating are required" });
+  }
+
+  const employeeWithReview = await models.Employee.findOne({
+    name: req.params.employee,
+    "reviews.appointmentId": appointmentId,
+  }).lean();
+  if (employeeWithReview) {
+    return res.status(409).json({ message: "A review for this appointment already exists" });
   }
 
   const employee = await models.Employee.findOneAndUpdate(

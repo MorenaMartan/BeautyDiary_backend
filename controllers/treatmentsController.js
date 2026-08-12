@@ -6,29 +6,42 @@ export async function getTreatments(req, res) {
 }
 
 export async function createTreatment(req, res) {
-  if (!req.body.name || !req.body.price || !req.body.duration) {
-    return res.status(400).json({ message: "Name, price and duration are required" });
+  const treatment = normalizeTreatment(req.body);
+  if (!treatment) {
+    return res.status(400).json({ message: "Name, category, positive price and positive duration are required" });
   }
 
-  const treatment = await models.Treatment.create({
+  const specialtyExists = await models.Specialty.exists({ name: treatment.specialty });
+  if (!specialtyExists) {
+    return res.status(400).json({ message: "Selected category does not exist" });
+  }
+
+  const createdTreatment = await models.Treatment.create({
     id: await nextId(models.Treatment),
-    name: req.body.name,
-    specialty: req.body.specialty || "Facial",
-    price: Number(req.body.price),
-    duration: Number(req.body.duration),
+    ...treatment,
   });
 
-  res.status(201).json(treatment);
+  res.status(201).json(createdTreatment);
 }
 
 export async function updateTreatment(req, res) {
-  const treatment = await models.Treatment.findOneAndUpdate({ id: Number(req.params.id) }, req.body, {
+  const treatment = normalizeTreatment(req.body);
+  if (!treatment) {
+    return res.status(400).json({ message: "Name, category, positive price and positive duration are required" });
+  }
+
+  const specialtyExists = await models.Specialty.exists({ name: treatment.specialty });
+  if (!specialtyExists) {
+    return res.status(400).json({ message: "Selected category does not exist" });
+  }
+
+  const updatedTreatment = await models.Treatment.findOneAndUpdate({ id: Number(req.params.id) }, treatment, {
     new: true,
     runValidators: true,
   }).lean();
 
-  if (!treatment) return res.status(404).json({ message: "Treatment not found" });
-  res.json(treatment);
+  if (!updatedTreatment) return res.status(404).json({ message: "Treatment not found" });
+  res.json(updatedTreatment);
 }
 
 export async function deleteTreatment(req, res) {
@@ -36,4 +49,17 @@ export async function deleteTreatment(req, res) {
   if (!treatment) return res.status(404).json({ message: "Treatment not found" });
 
   res.sendStatus(204);
+}
+
+function normalizeTreatment(data = {}) {
+  const name = data.name?.trim();
+  const specialty = data.specialty?.trim();
+  const price = Number(data.price);
+  const duration = Number(data.duration);
+
+  if (!name || !specialty || !Number.isFinite(price) || price <= 0 || !Number.isFinite(duration) || duration <= 0) {
+    return null;
+  }
+
+  return { name, specialty, price, duration };
 }

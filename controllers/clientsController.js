@@ -1,7 +1,9 @@
 import { models, nextId, syncUsersCollection } from "../db.js";
+import bcrypt from "bcrypt";
 
 export async function getClients(req, res) {
-  const clients = await models.Client.find().sort({ id: 1 }).lean();
+  const query = req.user.role === "Client" ? { id: req.user.id } : {};
+  const clients = await models.Client.find(query).sort({ id: 1 }).lean();
   res.json(clients);
 }
 
@@ -53,6 +55,10 @@ export async function getClientStats(req, res) {
 }
 
 export async function getClient(req, res) {
+  if (req.user.role === "Client" && Number(req.params.id) !== req.user.id) {
+    return res.status(403).json({ message: "Clients can view only their own profile" });
+  }
+
   const client = await models.Client.findOne({ id: Number(req.params.id) }).lean();
   if (!client) return res.status(404).json({ message: "Client not found" });
 
@@ -67,7 +73,7 @@ export async function createClient(req, res) {
     name,
     surname: body.surname || "Client",
     username: body.username || name,
-    password: body.password || name.toLowerCase(),
+    password: await bcrypt.hash(body.password || name.toLowerCase(), 12),
     email: body.email || "",
     mobile: body.mobile || "",
     birthday: body.birthday || "",
@@ -80,7 +86,12 @@ export async function createClient(req, res) {
 }
 
 export async function updateClient(req, res) {
+  if (req.user.role === "Client" && Number(req.params.id) !== req.user.id) {
+    return res.status(403).json({ message: "Clients can update only their own profile" });
+  }
+
   const updates = sanitizeClientUpdates(req.body || {});
+  if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
   const client = await models.Client.findOneAndUpdate({ id: Number(req.params.id) }, updates, {
     new: true,
     runValidators: true,

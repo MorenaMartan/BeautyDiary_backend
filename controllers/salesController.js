@@ -44,7 +44,7 @@ export async function getTreatmentStats(req, res) {
 }
 
 function activeAppointments(query = {}) {
-  return models.Appointment.find({ status: { $ne: "cancelled" }, ...query }).sort({ dayandhour: 1 }).lean();
+  return models.Appointment.find({ status: "completed", ...query }).sort({ dayandhour: 1 }).lean();
 }
 
 function escapeRegex(value) {

@@ -1,4 +1,5 @@
 import { models, nextId, syncUsersCollection } from "../db.js";
+import bcrypt from "bcrypt";
 
 const emptySchedule = {
   Monday: { start: "-", end: "-" },
@@ -46,7 +47,7 @@ export async function createEmployee(req, res) {
     email: body.email || "",
     mobile: body.mobile || "",
     username,
-    password: body.password || name.toLowerCase(),
+    password: await bcrypt.hash(body.password || name.toLowerCase(), 12),
     role: body.role || "Beautician",
     specialties: body.specialties || [],
     schedule: body.schedule || emptySchedule,
@@ -65,6 +66,7 @@ export async function updateEmployee(req, res) {
   if (!id) return res.status(400).json({ message: "Invalid employee id" });
 
   const updates = sanitizeEmployeeUpdates(req.body || {});
+  if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
   const employee = await models.Employee.findOneAndUpdate({ id }, updates, {
     new: true,
     runValidators: true,
@@ -89,6 +91,9 @@ export async function deleteEmployee(req, res) {
 export async function updateEmployeeProfile(req, res) {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ message: "Invalid employee id" });
+  if (req.user.role !== "Admin" && req.user.id !== id) {
+    return res.status(403).json({ message: "Employees can update only their own profile" });
+  }
 
   const allowedFields = ["name", "surname", "email", "mobile", "password"];
   const body = req.body || {};
@@ -97,6 +102,8 @@ export async function updateEmployeeProfile(req, res) {
   allowedFields.forEach((field) => {
     if (body[field] !== undefined) updates[field] = body[field];
   });
+
+  if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
 
   if (updates.name && !body.username) {
     updates.username = updates.name;
@@ -142,6 +149,31 @@ export async function deleteSpecialty(req, res) {
 
   const specialties = await models.Specialty.find().sort({ name: 1 }).lean();
   res.json(specialties.map((specialty) => specialty.name));
+}
+
+export async function updateSpecialty(req, res) {
+  const currentName = decodeURIComponent(req.params.name);
+  const name = req.body.name?.trim();
+
+  if (!name) return res.status(400).json({ message: "Specialty name is required" });
+  if (name === currentName) return res.json({ name });
+
+  const specialty = await models.Specialty.findOne({ name: currentName });
+  if (!specialty) return res.status(404).json({ message: "Specialty not found" });
+
+  const existingSpecialty = await models.Specialty.exists({
+    name: new RegExp(`^${escapeRegex(name)}$`, "i"),
+  });
+  if (existingSpecialty) return res.status(409).json({ message: "Specialty already exists" });
+
+  specialty.name = name;
+  await specialty.save();
+  await Promise.all([
+    models.Employee.updateMany({ specialties: currentName }, { $set: { "specialties.$": name } }),
+    models.Treatment.updateMany({ specialty: currentName }, { $set: { specialty: name } }),
+  ]);
+
+  res.json({ name });
 }
 
 function sanitizeEmployeeUpdates(data) {

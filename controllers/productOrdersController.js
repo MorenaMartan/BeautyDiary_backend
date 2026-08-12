@@ -3,12 +3,18 @@ import { models } from "../db.js";
 export async function getProductOrders(req, res) {
   const { employee } = req.query;
   const query = employee ? { name: employee } : {};
+  if (req.user.role === "Beautician") query.id = req.user.id;
+  if (req.user.role === "Client") return res.status(403).json({ message: "Clients cannot access product orders" });
   const employees = await models.Employee.find(query).sort({ id: 1 }).lean();
 
   res.json(employees.map((e) => ({ employee: e.name, productOrders: e.productOrders || [] })));
 }
 
 export async function createProductOrder(req, res) {
+  if (!(await canManageEmployeeOrders(req, req.params.employee))) {
+    return res.status(403).json({ message: "You can manage only your own product orders" });
+  }
+
   const order = {
     text: req.body.text || "",
     checked: false,
@@ -24,6 +30,10 @@ export async function createProductOrder(req, res) {
 }
 
 export async function updateProductOrder(req, res) {
+  if (!(await canManageEmployeeOrders(req, req.params.employee))) {
+    return res.status(403).json({ message: "You can manage only your own product orders" });
+  }
+
   const employee = await models.Employee.findOne({ name: req.params.employee });
   if (!employee) return res.status(404).json({ message: "Employee not found" });
 
@@ -39,6 +49,10 @@ export async function updateProductOrder(req, res) {
 }
 
 export async function deleteProductOrder(req, res) {
+  if (!(await canManageEmployeeOrders(req, req.params.employee))) {
+    return res.status(403).json({ message: "You can manage only your own product orders" });
+  }
+
   const employee = await models.Employee.findOne({ name: req.params.employee });
   if (!employee) return res.status(404).json({ message: "Employee not found" });
 
@@ -50,6 +64,7 @@ export async function deleteProductOrder(req, res) {
 }
 
 export async function cleanupProductOrders(req, res) {
+  if (req.user.role !== "Admin") return res.status(403).json({ message: "Only admin can clean up product orders" });
   const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
   const employees = await models.Employee.find();
 
@@ -59,4 +74,12 @@ export async function cleanupProductOrders(req, res) {
   }
 
   res.json({ message: "Cleanup completed" });
+}
+
+async function canManageEmployeeOrders(req, employeeName) {
+  if (req.user.role === "Admin") return true;
+  if (req.user.role !== "Beautician") return false;
+
+  const employee = await models.Employee.findOne({ id: req.user.id, name: employeeName }).lean();
+  return Boolean(employee);
 }

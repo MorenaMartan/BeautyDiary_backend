@@ -39,11 +39,6 @@ export async function syncUsersCollection() {
     Employee.find().lean(),
     Client.find().lean(),
   ]);
-  const validUsers = new Set([
-    ...employees.map((employee) => `employee:${employee.id}`),
-    ...clients.map((client) => `client:${client.id}`),
-  ]);
-
   const operations = [
     ...employees.map((employee) => ({
       updateOne: {
@@ -88,20 +83,11 @@ export async function syncUsersCollection() {
   if (operations.length) {
     await User.bulkWrite(operations);
   }
-
-  const users = await User.find().lean();
-  const staleUserIds = users
-    .filter((user) => !validUsers.has(`${user.sourceType}:${user.sourceId}`))
-    .map((user) => user._id);
-
-  if (staleUserIds.length) {
-    await User.deleteMany({ _id: { $in: staleUserIds } });
-  }
 }
 
 async function ensureDefaultSpecialties() {
   await Promise.all(
-    ["Haircut", "Facial", "Massage"].map((name) =>
+    ["Nokti", "Depilacija", "Masaža"].map((name) =>
       Specialty.updateOne({ name }, { $setOnInsert: { name } }, { upsert: true }),
     ),
   );

@@ -9,6 +9,7 @@ import {
   getSpecialties,
   updateEmployeeProfile,
   updateEmployee,
+  updateSpecialty,
 } from "../controllers/employeesController.js";
 import { requireAdmin } from "../middleware/roles.js";
 
@@ -17,6 +18,7 @@ const router = Router();
 router.get("/", getEmployees);
 router.get("/specialties", getSpecialties);
 router.post("/specialties", requireAdmin, createSpecialty);
+router.patch("/specialties/:name", requireAdmin, updateSpecialty);
 router.delete("/specialties/:name", requireAdmin, deleteSpecialty);
 router.get("/:id", getEmployee);
 router.post("/", requireAdmin, createEmployee);
