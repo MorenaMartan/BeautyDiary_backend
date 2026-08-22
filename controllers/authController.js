@@ -79,7 +79,7 @@ export async function refresh(req, res) {
 
     const user = publicUser(currentUser, type);
     res.cookie("beautyDiaryRefresh", createRefreshToken(user), refreshCookieOptions());
-    res.json({ token: createAccessToken(user) });
+    res.json({ user, token: createAccessToken(user) });
   } catch {
     res.status(401).json({ message: "Invalid or expired refresh token" });
   }

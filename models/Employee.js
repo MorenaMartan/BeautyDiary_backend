@@ -35,10 +35,12 @@ const employeeSchema = new mongoose.Schema(
     surname: { type: String, default: "" },
     email: { type: String, default: "" },
     mobile: { type: String, default: "" },
+    birthday: { type: String, default: "" },
     username: { type: String, required: true, unique: true, index: true },
     password: { type: String, required: true },
     role: { type: String, enum: ["Admin", "Beautician"], default: "Beautician" },
     specialties: { type: [String], default: [] },
+    treatments: { type: [String], default: [] },
     schedule: {
       Monday: { type: dayScheduleSchema, default: () => ({}) },
       Tuesday: { type: dayScheduleSchema, default: () => ({}) },

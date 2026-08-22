@@ -11,12 +11,15 @@ const {
   calculateAvailableBeautyPoints,
   calculateCancellationFee,
   calculateDiscountedPrice,
+  employeeCanPerformTreatment,
   getAppointments,
   isFutureAppointment,
 } = await import("../controllers/appointmentsController.js");
 const {
   updateEmployee,
+  updateEmployeeProfile,
   updateEmployeeSchedule,
+  updateEmployeeTreatments,
   updateEmployeeVacations,
   updateVacationAllowance,
 } = await import("../controllers/employeesController.js");
@@ -25,7 +28,7 @@ const {
   updateProductOrder,
 } = await import("../controllers/productOrdersController.js");
 const { signup } = await import("../controllers/authController.js");
-const { sanitizeClientUpdates } = await import("../controllers/clientsController.js");
+const { createClient, sanitizeClientUpdates } = await import("../controllers/clientsController.js");
 const { models } = await import("../db.js");
 
 test("signup requires a password with at least 8 characters", async () => {
@@ -55,6 +58,48 @@ test("employee password updates require at least 8 characters", async () => {
   };
 
   await updateEmployee(req, res);
+
+  assert.equal(status, 400);
+  assert.equal(response.message, "Password must contain at least 8 characters");
+});
+
+test("beauticians can update only their own employee profile", async () => {
+  for (const user of [
+    { id: 3, role: "Beautician", type: "employee" },
+    { id: 2, role: "Client", type: "client" },
+  ]) {
+    let status;
+    const req = { params: { id: "2" }, user, body: { name: "Changed" } };
+    const res = { status: (code) => { status = code; return res; }, json: () => {} };
+
+    await updateEmployeeProfile(req, res);
+    assert.equal(status, 403);
+  }
+});
+
+test("beauticians can assign treatments only to their own employee profile", async () => {
+  let status;
+  const req = {
+    params: { id: "3" },
+    user: { id: 2, role: "Beautician", type: "employee" },
+    body: { treatments: ["Haircut"] },
+  };
+  const res = { status: (code) => { status = code; return res; }, json: () => {} };
+
+  await updateEmployeeTreatments(req, res);
+  assert.equal(status, 403);
+});
+
+test("clients added by employees require a password with at least 8 characters", async () => {
+  let status;
+  let response;
+  const req = { body: { name: "New client", username: "new-client", password: "short" } };
+  const res = {
+    status: (code) => { status = code; return res; },
+    json: (body) => { response = body; },
+  };
+
+  await createClient(req, res);
 
   assert.equal(status, 400);
   assert.equal(response.message, "Password must contain at least 8 characters");
@@ -122,6 +167,18 @@ test("admin middleware prevents beauticians from changing vacation allowances", 
 
   requireAdmin(req, res, () => assert.fail("middleware must not continue"));
   assert.equal(status, 403);
+});
+
+test("admin middleware permits employees with the Admin role", () => {
+  const req = { user: { id: 1, role: "Admin", type: "employee" } };
+  const res = { status: () => res, json: () => {} };
+  let continued = false;
+
+  requireAdmin(req, res, () => {
+    continued = true;
+  });
+
+  assert.equal(continued, true);
 });
 
 test("admin product orders are loaded from all actual employee profiles", async () => {
@@ -393,6 +450,14 @@ test("appointments can be booked only for a future date and time", () => {
   assert.equal(isFutureAppointment("2026-08-17 10:00", now), false);
   assert.equal(isFutureAppointment("2026-08-17 10:01", now), true);
   assert.equal(isFutureAppointment("invalid", now), false);
+});
+
+test("assigned treatment names take precedence over legacy employee categories", () => {
+  const facial = { name: "Deep facial", specialty: "Facial" };
+
+  assert.equal(employeeCanPerformTreatment({ treatments: ["Deep facial"], specialties: [] }, facial), true);
+  assert.equal(employeeCanPerformTreatment({ treatments: ["Basic facial"], specialties: ["Facial"] }, facial), false);
+  assert.equal(employeeCanPerformTreatment({ treatments: [], specialties: ["Facial"] }, facial), true);
 });
 
 test("late cancellation fee is half of the treatment price", () => {

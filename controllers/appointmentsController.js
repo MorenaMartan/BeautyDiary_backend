@@ -265,7 +265,13 @@ export async function getAvailability(req, res) {
     return res.status(400).json({ message: "Date and treatment are required" });
   }
 
-  const employees = await models.Employee.find({ specialties: selectedTreatment.specialty }).lean();
+  const employees = await models.Employee.find({
+    $or: [
+      { treatments: selectedTreatment.name },
+      { treatments: { $size: 0 }, specialties: selectedTreatment.specialty },
+      { treatments: { $exists: false }, specialties: selectedTreatment.specialty },
+    ],
+  }).lean();
   const appointments = await models.Appointment.find({
     dayandhour: new RegExp(`^${escapeRegex(date)}`),
   }).lean();
@@ -291,7 +297,7 @@ async function validateAppointmentAvailability(appointment, treatment) {
 
   const employee = await models.Employee.findOne({ name: appointment.beautician }).lean();
   if (!employee) return "Selected beautician does not exist";
-  if (!employee.specialties?.includes(treatment.specialty)) {
+  if (!employeeCanPerformTreatment(employee, treatment)) {
     return "Selected beautician is not qualified for this treatment";
   }
 
@@ -309,7 +315,17 @@ async function validateAppointmentAvailability(appointment, treatment) {
   return null;
 }
 
+export function employeeCanPerformTreatment(employee, treatment) {
+  if (employee.treatments?.length) return employee.treatments.includes(treatment.name);
+  return employee.specialties?.includes(treatment.specialty) || false;
+}
+
 function getAvailableTimes(employee, date, duration, appointments) {
+  const isOnVacation = (employee.vacations || []).some((vacation) =>
+    (typeof vacation === "string" ? vacation : vacation.date) === date,
+  );
+  if (isOnVacation) return [];
+
   const schedule = employee.schedule?.[dayName(date)];
   if (!schedule || schedule.start === "-" || schedule.end === "-") return [];
 

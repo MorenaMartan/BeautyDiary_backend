@@ -46,10 +46,12 @@ export async function createEmployee(req, res) {
     surname: body.surname || "",
     email: body.email || "",
     mobile: body.mobile || "",
+    birthday: body.birthday || "",
     username,
     password: await bcrypt.hash(body.password || name.toLowerCase(), 12),
     role: body.role || "Beautician",
     specialties: body.specialties || [],
+    treatments: body.treatments || [],
     schedule: body.schedule || emptySchedule,
     reviews: [],
     productOrders: [{ text: "", checked: false }],
@@ -94,11 +96,15 @@ export async function deleteEmployee(req, res) {
 export async function updateEmployeeProfile(req, res) {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ message: "Invalid employee id" });
-  if (req.user.role !== "Admin" && req.user.id !== id) {
+
+  const canManageProfile =
+    req.user.role === "Admin" ||
+    (req.user.role === "Beautician" && req.user.type === "employee" && req.user.id === id);
+  if (!canManageProfile) {
     return res.status(403).json({ message: "Employees can update only their own profile" });
   }
 
-  const allowedFields = ["name", "surname", "email", "mobile", "password"];
+  const allowedFields = ["name", "surname", "email", "mobile", "birthday", "password"];
   const body = req.body || {};
   const updates = {};
 
@@ -106,11 +112,10 @@ export async function updateEmployeeProfile(req, res) {
     if (body[field] !== undefined) updates[field] = body[field];
   });
 
-  if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
-
-  if (updates.name && !body.username) {
-    updates.username = updates.name;
+  if ("password" in updates && (typeof updates.password !== "string" || updates.password.length < 8)) {
+    return res.status(400).json({ message: "Password must contain at least 8 characters" });
   }
+  if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
 
   const employee = await models.Employee.findOneAndUpdate({ id }, updates, {
     new: true,
@@ -119,6 +124,38 @@ export async function updateEmployeeProfile(req, res) {
 
   if (!employee) return res.status(404).json({ message: "Employee not found" });
   await syncUsersCollection();
+  res.json(toPublicEmployee(employee));
+}
+
+export async function updateEmployeeTreatments(req, res) {
+  const id = parseId(req.params.id);
+  if (!id) return res.status(400).json({ message: "Invalid employee id" });
+
+  const canManageTreatments =
+    req.user.role === "Admin" ||
+    (req.user.role === "Beautician" && req.user.type === "employee" && req.user.id === id);
+  if (!canManageTreatments) {
+    return res.status(403).json({ message: "Employees can update only their own treatments" });
+  }
+
+  const treatments = req.body.treatments;
+  if (!Array.isArray(treatments) || treatments.some((treatment) => typeof treatment !== "string" || !treatment.trim())) {
+    return res.status(400).json({ message: "Treatments must be a list of treatment names" });
+  }
+
+  const uniqueTreatments = [...new Set(treatments.map((treatment) => treatment.trim()))];
+  const existingTreatmentCount = await models.Treatment.countDocuments({ name: { $in: uniqueTreatments } });
+  if (existingTreatmentCount !== uniqueTreatments.length) {
+    return res.status(400).json({ message: "One or more selected treatments do not exist" });
+  }
+
+  const employee = await models.Employee.findOneAndUpdate(
+    { id },
+    { treatments: uniqueTreatments, specialties: [] },
+    { new: true, runValidators: true },
+  ).lean();
+
+  if (!employee) return res.status(404).json({ message: "Employee not found" });
   res.json(toPublicEmployee(employee));
 }
 
@@ -272,14 +309,7 @@ function sanitizeEmployeeUpdates(data) {
   const updates = { ...data };
   delete updates._id;
   delete updates.id;
-
-  if (updates.reviews) {
-    updates.reviews = updates.reviews.map((review) => {
-      const cleanReview = { ...review };
-      delete cleanReview._id;
-      return cleanReview;
-    });
-  }
+  delete updates.reviews;
 
   if (updates.productOrders) {
     updates.productOrders = updates.productOrders.map((order) => {
@@ -326,6 +356,7 @@ function escapeRegex(value) {
 }
 
 function toPublicEmployee(employee) {
-  const { password, ...publicEmployee } = employee;
+  const plainEmployee = typeof employee.toObject === "function" ? employee.toObject() : employee;
+  const { password, ...publicEmployee } = plainEmployee;
   return publicEmployee;
 }

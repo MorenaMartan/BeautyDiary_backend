@@ -18,7 +18,7 @@ router.get("/:id", getClient);
 router.post("/", requireRole("Admin", "Beautician"), createClient);
 router.put("/:id", requireRole("Admin", "Beautician", "Client"), updateClient);
 router.patch("/:id", requireRole("Admin", "Beautician", "Client"), updateClient);
-router.delete("/:id", requireAdmin, deleteClient);
+router.delete("/:id", requireRole("Admin", "Beautician"), deleteClient);
 router.post("/:id/diary", requireAdmin, addDiaryNote);
 
 export default router;

@@ -9,6 +9,7 @@ import {
   getSpecialties,
   updateEmployeeProfile,
   updateEmployeeSchedule,
+  updateEmployeeTreatments,
   updateEmployeeVacations,
   updateVacationAllowance,
   updateEmployee,
@@ -27,6 +28,7 @@ router.get("/:id", getEmployee);
 router.post("/", requireAdmin, createEmployee);
 router.patch("/:id/profile", updateEmployeeProfile);
 router.patch("/:id/schedule", updateEmployeeSchedule);
+router.patch("/:id/treatments", updateEmployeeTreatments);
 router.patch("/:id/vacations", updateEmployeeVacations);
 router.patch("/:id/vacation-allowance", requireAdmin, updateVacationAllowance);
 router.put("/:id", requireAdmin, updateEmployee);

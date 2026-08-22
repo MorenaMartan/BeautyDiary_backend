@@ -35,12 +35,20 @@ export async function updateTreatment(req, res) {
     return res.status(400).json({ message: "Selected category does not exist" });
   }
 
+  const existingTreatment = await models.Treatment.findOne({ id: Number(req.params.id) }).lean();
+  if (!existingTreatment) return res.status(404).json({ message: "Treatment not found" });
+
   const updatedTreatment = await models.Treatment.findOneAndUpdate({ id: Number(req.params.id) }, treatment, {
     new: true,
     runValidators: true,
   }).lean();
 
-  if (!updatedTreatment) return res.status(404).json({ message: "Treatment not found" });
+  if (existingTreatment.name !== treatment.name) {
+    await models.Employee.updateMany(
+      { treatments: existingTreatment.name },
+      { $set: { "treatments.$": treatment.name } },
+    );
+  }
   res.json(updatedTreatment);
 }
 
@@ -48,6 +56,7 @@ export async function deleteTreatment(req, res) {
   const treatment = await models.Treatment.findOneAndDelete({ id: Number(req.params.id) });
   if (!treatment) return res.status(404).json({ message: "Treatment not found" });
 
+  await models.Employee.updateMany({}, { $pull: { treatments: treatment.name } });
   res.sendStatus(204);
 }
 

@@ -72,13 +72,27 @@ export async function getClient(req, res) {
 
 export async function createClient(req, res) {
   const body = req.body || {};
-  const name = body.name || "New";
+  const name = body.name?.trim();
+  const username = body.username?.trim();
+  if (!name) return res.status(400).json({ message: "Client name is required" });
+  if (!username) return res.status(400).json({ message: "Username is required" });
+  if (typeof body.password !== "string" || body.password.trim().length < 8) {
+    return res.status(400).json({ message: "Password must contain at least 8 characters" });
+  }
+
+  const alreadyExists = await models.User.exists({
+    username: new RegExp(`^${escapeRegex(username)}$`, "i"),
+  });
+  if (alreadyExists) {
+    return res.status(409).json({ message: "A user with this username already exists" });
+  }
+
   const client = await models.Client.create({
     id: await nextId(models.Client),
     name,
-    surname: body.surname || "Client",
-    username: body.username || name,
-    password: await bcrypt.hash(body.password || name.toLowerCase(), 12),
+    surname: body.surname?.trim() || "",
+    username,
+    password: await bcrypt.hash(body.password, 12),
     email: body.email || "",
     mobile: body.mobile || "",
     birthday: body.birthday || "",
@@ -152,6 +166,11 @@ export function sanitizeClientUpdates(data, role) {
 }
 
 function toPublicClient(client) {
-  const { password, ...publicClient } = client;
+  const plainClient = typeof client.toObject === "function" ? client.toObject() : client;
+  const { password, ...publicClient } = plainClient;
   return publicClient;
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
