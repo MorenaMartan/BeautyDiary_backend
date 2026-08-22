@@ -40,8 +40,13 @@ export async function login(req, res) {
 }
 
 export async function signup(req, res) {
-  const name = req.body.name || "New";
-  const username = req.body.username || name;
+  const body = req.body || {};
+  if (typeof body.password !== "string" || body.password.trim().length < 8) {
+    return res.status(400).json({ message: "Password must contain at least 8 characters" });
+  }
+
+  const name = body.name || "New";
+  const username = body.username || name;
   const alreadyExists =
     (await models.Employee.exists(usernameQuery(username))) || (await models.Client.exists(usernameQuery(username)));
 
@@ -52,21 +57,28 @@ export async function signup(req, res) {
   const client = await models.Client.create({
     id: await nextId(models.Client),
     name,
-    surname: req.body.surname || "Client",
+    surname: body.surname || "Client",
     username,
-    password: await bcrypt.hash(req.body.password || name.toLowerCase(), 12),
-    email: req.body.email || "",
-    mobile: req.body.mobile || "",
-    birthday: req.body.birthday || "",
+    password: await bcrypt.hash(body.password, 12),
+    email: body.email || "",
+    mobile: body.mobile || "",
+    birthday: body.birthday || "",
     diary: [{ date: "", text: "", expanded: false }],
   });
 
   res.status(201).json(loginResponse(client, "client", res));
 }
 
-export function refresh(req, res) {
+export async function refresh(req, res) {
   try {
-    const user = verifyRefreshToken(req.cookies.beautyDiaryRefresh || "");
+    const tokenUser = verifyRefreshToken(req.cookies.beautyDiaryRefresh || "");
+    const type = tokenUser.type === "client" ? "client" : "employee";
+    const Model = type === "client" ? models.Client : models.Employee;
+    const currentUser = await Model.findOne({ id: tokenUser.id }).lean();
+    if (!currentUser) throw new Error("Account not found");
+
+    const user = publicUser(currentUser, type);
+    res.cookie("beautyDiaryRefresh", createRefreshToken(user), refreshCookieOptions());
     res.json({ token: createAccessToken(user) });
   } catch {
     res.status(401).json({ message: "Invalid or expired refresh token" });

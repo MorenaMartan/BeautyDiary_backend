@@ -8,6 +8,9 @@ import {
   getEmployees,
   getSpecialties,
   updateEmployeeProfile,
+  updateEmployeeSchedule,
+  updateEmployeeVacations,
+  updateVacationAllowance,
   updateEmployee,
   updateSpecialty,
 } from "../controllers/employeesController.js";
@@ -23,6 +26,9 @@ router.delete("/specialties/:name", requireAdmin, deleteSpecialty);
 router.get("/:id", getEmployee);
 router.post("/", requireAdmin, createEmployee);
 router.patch("/:id/profile", updateEmployeeProfile);
+router.patch("/:id/schedule", updateEmployeeSchedule);
+router.patch("/:id/vacations", updateEmployeeVacations);
+router.patch("/:id/vacation-allowance", requireAdmin, updateVacationAllowance);
 router.put("/:id", requireAdmin, updateEmployee);
 router.patch("/:id", requireAdmin, updateEmployee);
 router.delete("/:id", requireAdmin, deleteEmployee);

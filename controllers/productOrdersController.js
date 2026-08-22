@@ -1,26 +1,36 @@
 import { models } from "../db.js";
 
 export async function getProductOrders(req, res) {
-  const { employee } = req.query;
-  const query = employee ? { name: employee } : {};
-  if (req.user.role === "Beautician") query.id = req.user.id;
   if (req.user.role === "Client") return res.status(403).json({ message: "Clients cannot access product orders" });
+  const query = req.user.role === "Beautician"
+    ? { id: req.user.id, role: "Beautician" }
+    : {};
   const employees = await models.Employee.find(query).sort({ id: 1 }).lean();
 
-  res.json(employees.map((e) => ({ employee: e.name, productOrders: e.productOrders || [] })));
+  res.json(employees.map((employee) => ({
+    id: employee.id,
+    name: employee.name,
+    surname: employee.surname,
+    role: employee.role,
+    productOrders: employee.productOrders || [],
+  })));
 }
 
 export async function createProductOrder(req, res) {
-  if (!(await canManageEmployeeOrders(req, req.params.employee))) {
+  const employeeId = Number(req.params.employeeId);
+  if (!(await canManageEmployeeOrders(req, employeeId))) {
     return res.status(403).json({ message: "You can manage only your own product orders" });
   }
 
+  if (typeof req.body.text !== "string") {
+    return res.status(400).json({ message: "Product order text must be a string" });
+  }
   const order = {
-    text: req.body.text || "",
+    text: req.body.text,
     checked: false,
   };
   const employee = await models.Employee.findOneAndUpdate(
-    { name: req.params.employee },
+    { id: employeeId },
     { $push: { productOrders: order } },
     { new: true },
   ).lean();
@@ -30,17 +40,27 @@ export async function createProductOrder(req, res) {
 }
 
 export async function updateProductOrder(req, res) {
-  if (!(await canManageEmployeeOrders(req, req.params.employee))) {
+  const employeeId = Number(req.params.employeeId);
+  if (!(await canManageEmployeeOrders(req, employeeId))) {
     return res.status(403).json({ message: "You can manage only your own product orders" });
   }
+  if ("checked" in req.body && req.user.role !== "Admin") {
+    return res.status(403).json({ message: "Only admin can mark products as purchased" });
+  }
 
-  const employee = await models.Employee.findOne({ name: req.params.employee });
+  const employee = await models.Employee.findOne({ id: employeeId });
   if (!employee) return res.status(404).json({ message: "Employee not found" });
 
   const order = employee.productOrders[Number(req.params.index)];
   if (!order) return res.status(404).json({ message: "Product order not found" });
 
-  Object.assign(order, req.body);
+  if ("text" in req.body) {
+    if (typeof req.body.text !== "string") {
+      return res.status(400).json({ message: "Product order text must be a string" });
+    }
+    order.text = req.body.text;
+  }
+  if ("checked" in req.body) order.checked = Boolean(req.body.checked);
   if (order.checked && !order.checkedAt) order.checkedAt = new Date();
   if (!order.checked) order.checkedAt = undefined;
 
@@ -49,11 +69,12 @@ export async function updateProductOrder(req, res) {
 }
 
 export async function deleteProductOrder(req, res) {
-  if (!(await canManageEmployeeOrders(req, req.params.employee))) {
+  const employeeId = Number(req.params.employeeId);
+  if (!(await canManageEmployeeOrders(req, employeeId))) {
     return res.status(403).json({ message: "You can manage only your own product orders" });
   }
 
-  const employee = await models.Employee.findOne({ name: req.params.employee });
+  const employee = await models.Employee.findOne({ id: employeeId });
   if (!employee) return res.status(404).json({ message: "Employee not found" });
 
   employee.productOrders.splice(Number(req.params.index), 1);
@@ -76,10 +97,14 @@ export async function cleanupProductOrders(req, res) {
   res.json({ message: "Cleanup completed" });
 }
 
-async function canManageEmployeeOrders(req, employeeName) {
+async function canManageEmployeeOrders(req, employeeId) {
+  if (!Number.isInteger(employeeId) || employeeId < 1) return false;
   if (req.user.role === "Admin") return true;
   if (req.user.role !== "Beautician") return false;
 
-  const employee = await models.Employee.findOne({ id: req.user.id, name: employeeName }).lean();
-  return Boolean(employee);
+  const employee = await models.Employee.findOne({
+    id: req.user.id,
+    role: "Beautician",
+  }).lean();
+  return Boolean(employee && employee.id === employeeId);
 }

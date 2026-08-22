@@ -51,6 +51,7 @@ const employeeSchema = new mongoose.Schema(
     reviews: { type: [reviewSchema], default: [] },
     productOrders: { type: [productOrderSchema], default: [] },
     vacations: { type: [String], default: [] },
+    vacationAllowance: { type: Number, default: 20, min: 0, max: 365 },
   },
   { id: false, versionKey: false },
 );

@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { Appointment, Client, Employee, Specialty, Treatment, User } from "./models/index.js";
+import { Appointment, Client, Employee, Specialty, Treatment, User, LoyaltySettings } from "./models/index.js";
 
 const DEFAULT_MONGODB_URI = "mongodb://127.0.0.1:27017/beautydiary";
 
@@ -27,6 +27,7 @@ export const models = {
   Specialty,
   Treatment,
   User,
+  LoyaltySettings,
 };
 
 export async function nextId(Model) {

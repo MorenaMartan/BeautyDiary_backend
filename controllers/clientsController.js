@@ -4,7 +4,7 @@ import bcrypt from "bcrypt";
 export async function getClients(req, res) {
   const query = req.user.role === "Client" ? { id: req.user.id } : {};
   const clients = await models.Client.find(query).sort({ id: 1 }).lean();
-  res.json(clients);
+  res.json(clients.map(toPublicClient));
 }
 
 export async function getClientStats(req, res) {
@@ -51,7 +51,12 @@ export async function getClientStats(req, res) {
     return Math.max(...clientAppointments.map((appointment) => appointmentDate(appointment).getTime())) < daysAgo(60).getTime();
   });
 
-  res.json({ topSpenders, mostCancelled, newClients, inactiveClients });
+  res.json({
+    topSpenders: topSpenders.map(toPublicClient),
+    mostCancelled: mostCancelled.map(toPublicClient),
+    newClients: newClients.map(toPublicClient),
+    inactiveClients: inactiveClients.map(toPublicClient),
+  });
 }
 
 export async function getClient(req, res) {
@@ -62,7 +67,7 @@ export async function getClient(req, res) {
   const client = await models.Client.findOne({ id: Number(req.params.id) }).lean();
   if (!client) return res.status(404).json({ message: "Client not found" });
 
-  res.json(client);
+  res.json(toPublicClient(client));
 }
 
 export async function createClient(req, res) {
@@ -82,7 +87,7 @@ export async function createClient(req, res) {
 
   await syncUsersCollection();
 
-  res.status(201).json(client);
+  res.status(201).json(toPublicClient(client));
 }
 
 export async function updateClient(req, res) {
@@ -90,7 +95,7 @@ export async function updateClient(req, res) {
     return res.status(403).json({ message: "Clients can update only their own profile" });
   }
 
-  const updates = sanitizeClientUpdates(req.body || {});
+  const updates = sanitizeClientUpdates(req.body || {}, req.user.role);
   if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
   const client = await models.Client.findOneAndUpdate({ id: Number(req.params.id) }, updates, {
     new: true,
@@ -99,7 +104,7 @@ export async function updateClient(req, res) {
 
   if (!client) return res.status(404).json({ message: "Client not found" });
   await syncUsersCollection();
-  res.json(client);
+  res.json(toPublicClient(client));
 }
 
 export async function deleteClient(req, res) {
@@ -127,8 +132,11 @@ export async function addDiaryNote(req, res) {
   res.status(201).json(note);
 }
 
-function sanitizeClientUpdates(data) {
-  const updates = { ...data };
+export function sanitizeClientUpdates(data, role) {
+  const allowedClientFields = ["name", "surname", "username", "password", "email", "mobile", "birthday"];
+  const updates = role === "Client"
+    ? Object.fromEntries(allowedClientFields.filter((field) => data[field] !== undefined).map((field) => [field, data[field]]))
+    : { ...data };
   delete updates._id;
   delete updates.id;
 
@@ -141,4 +149,9 @@ function sanitizeClientUpdates(data) {
   }
 
   return updates;
+}
+
+function toPublicClient(client) {
+  const { password, ...publicClient } = client;
+  return publicClient;
 }

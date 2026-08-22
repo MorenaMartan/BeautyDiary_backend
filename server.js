@@ -9,6 +9,7 @@ import treatmentRoutes from "./routes/treatments.routes.js";
 import productOrderRoutes from "./routes/productOrders.routes.js";
 import reviewRoutes from "./routes/reviews.routes.js";
 import salesRoutes from "./routes/sales.routes.js";
+import loyaltySettingsRoutes from "./routes/loyaltySettings.routes.js";
 import { connectToDatabase } from "./db.js";
 import { requireAuth } from "./middleware/auth.js";
 
@@ -48,6 +49,7 @@ app.use("/api/treatments", requireAuth, treatmentRoutes);
 app.use("/api/product-orders", requireAuth, productOrderRoutes);
 app.use("/api/reviews", requireAuth, reviewRoutes);
 app.use("/api/sales", requireAuth, salesRoutes);
+app.use("/api/loyalty-settings", requireAuth, loyaltySettingsRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: "Route not found" });

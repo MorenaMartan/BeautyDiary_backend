@@ -1,9 +1,17 @@
 import { models, nextId } from "../db.js";
 import { dayName, overlaps, toMinutes, toTime } from "../utils/time.js";
 
+const defaultLoyaltySettings = {
+  eurosSpent: 15,
+  pointsEarned: 1,
+  pointsRequired: 10,
+  discountPercentage: 10,
+};
+
 export async function getAppointments(req, res) {
   const { date, month, beautician, client, status } = req.query;
   const query = {};
+  let currentClient = null;
 
   if (date) query.dayandhour = new RegExp(`^${escapeRegex(date)}`);
   if (month) query.dayandhour = new RegExp(`^${escapeRegex(month)}`);
@@ -11,18 +19,37 @@ export async function getAppointments(req, res) {
   if (status) query.status = status;
 
   if (req.user.role === "Client") {
-    const currentClient = await models.Client.findOne({ id: req.user.id }).lean();
+    currentClient = await models.Client.findOne({ id: req.user.id }).lean();
     if (!currentClient) return res.status(403).json({ message: "Client account not found" });
-    query.client_name = currentClient.name;
-    query.client_surname = currentClient.surname;
   }
 
   let appointments = await models.Appointment.find(query).sort({ dayandhour: 1 }).lean();
 
-  if (client) {
+  if (client && req.user.role !== "Client") {
     appointments = appointments.filter((appointment) =>
       `${appointment.client_name} ${appointment.client_surname}`.toLowerCase().includes(client.toLowerCase()),
     );
+  }
+
+  if (currentClient) {
+    appointments = appointments.flatMap((appointment) => {
+      const isOwnAppointment =
+        appointment.clientId === currentClient.id ||
+        (
+          appointment.client_name === currentClient.name &&
+          appointment.client_surname === currentClient.surname
+        );
+      if (isOwnAppointment) return [appointment];
+      if (appointment.status === "cancelled") return [];
+
+      return [{
+        dayandhour: appointment.dayandhour,
+        beautician: appointment.beautician,
+        duration: appointment.duration,
+        status: "booked",
+        isBusy: true,
+      }];
+    });
   }
 
   res.json(appointments);
@@ -30,26 +57,43 @@ export async function getAppointments(req, res) {
 
 export async function createAppointment(req, res) {
   const treatment = await findTreatment(req.body.treatment);
+  let currentClient = null;
 
   if (req.user.role === "Client") {
-    const currentClient = await models.Client.findOne({ id: req.user.id }).lean();
+    currentClient = await models.Client.findOne({ id: req.user.id }).lean();
     if (!currentClient) return res.status(403).json({ message: "Client account not found" });
     if (req.body.client_name !== currentClient.name || (req.body.client_surname || "") !== currentClient.surname) {
       return res.status(403).json({ message: "Clients can create appointments only for themselves" });
     }
   }
 
+  const useBeautyPoints = req.body.useBeautyPoints === true;
+  if (useBeautyPoints && req.user.role !== "Client") {
+    return res.status(403).json({ message: "Only clients can redeem Beauty Points" });
+  }
+
+  const loyaltySettings = useBeautyPoints
+    ? (await models.LoyaltySettings.findOne({ key: "default" }).lean()) || defaultLoyaltySettings
+    : null;
+  const originalPrice = treatment?.price ?? 0;
+
   const appointment = {
     id: await nextId(models.Appointment),
     client_name: req.body.client_name,
     client_surname: req.body.client_surname,
+    clientId: currentClient?.id,
     treatment: req.body.treatment,
     dayandhour: req.body.dayandhour,
     beautician: req.body.beautician,
-    price: req.body.price ?? treatment?.price ?? 0,
-    duration: req.body.duration ?? treatment?.duration ?? 60,
-    status: req.body.status || "booked",
-    earningsAmount: req.body.earningsAmount || 0,
+    price: useBeautyPoints
+      ? calculateDiscountedPrice(originalPrice, loyaltySettings.discountPercentage)
+      : originalPrice,
+    originalPrice,
+    duration: treatment?.duration ?? 60,
+    status: "booked",
+    earningsAmount: 0,
+    beautyPointsRedeemed: useBeautyPoints ? loyaltySettings.pointsRequired : 0,
+    discountPercentage: useBeautyPoints ? loyaltySettings.discountPercentage : 0,
   };
 
   if (!appointment.client_name || !appointment.treatment || !appointment.dayandhour || !appointment.beautician) {
@@ -65,8 +109,37 @@ export async function createAppointment(req, res) {
     return res.status(409).json({ message: "The beautician or client already has an overlapping appointment" });
   }
 
-  const createdAppointment = await models.Appointment.create(appointment);
-  res.status(201).json(createdAppointment);
+  let reservedPoints = 0;
+  if (useBeautyPoints) {
+    const availablePoints = calculateAvailableBeautyPoints(currentClient, loyaltySettings);
+    if (availablePoints < loyaltySettings.pointsRequired) {
+      return res.status(409).json({ message: "You do not have enough Beauty Points for this discount" });
+    }
+
+    const updatedClient = await models.Client.findOneAndUpdate(
+      { id: currentClient.id, spentBeautyPoints: currentClient.spentBeautyPoints || 0 },
+      { $inc: { spentBeautyPoints: loyaltySettings.pointsRequired } },
+      { new: true, runValidators: true },
+    ).lean();
+
+    if (!updatedClient) {
+      return res.status(409).json({ message: "Beauty Points balance changed. Please try again" });
+    }
+    reservedPoints = loyaltySettings.pointsRequired;
+  }
+
+  try {
+    const createdAppointment = await models.Appointment.create(appointment);
+    res.status(201).json(createdAppointment);
+  } catch (error) {
+    if (reservedPoints) {
+      await models.Client.updateOne(
+        { id: currentClient.id },
+        { $inc: { spentBeautyPoints: -reservedPoints } },
+      );
+    }
+    throw error;
+  }
 }
 
 export async function updateAppointment(req, res) {
@@ -77,6 +150,15 @@ export async function updateAppointment(req, res) {
   const updates = { ...req.body };
   delete updates._id;
   delete updates.id;
+
+  if (updates.status === "cancelled") {
+    return res.status(400).json({ message: "Use the cancellation endpoint to cancel an appointment" });
+  }
+
+  if (["completed", "no_show"].includes(updates.status) && !appointmentHasStarted(existingAppointment.dayandhour)) {
+    return res.status(400).json({ message: "An appointment can be completed or marked as no-show only after it has started" });
+  }
+
   const updatedData = { ...existingAppointment, ...updates, id };
 
   if (isBlockingAppointment(updatedData)) {
@@ -89,10 +171,31 @@ export async function updateAppointment(req, res) {
     return res.status(409).json({ message: "The beautician or client already has an overlapping appointment" });
   }
 
-  const appointment = await models.Appointment.findOneAndUpdate({ id }, updates, {
+  const isFirstCompletion = updates.status === "completed" && existingAppointment.status !== "completed";
+  if (isFirstCompletion) updates.earningsAmount = Number(updatedData.price || 0);
+  const updateQuery = isFirstCompletion ? { id, status: existingAppointment.status } : { id };
+  const appointment = await models.Appointment.findOneAndUpdate(updateQuery, updates, {
     new: true,
     runValidators: true,
   }).lean();
+
+  if (!appointment) {
+    return res.status(409).json({ message: "Appointment status changed. Please try again" });
+  }
+
+  if (isFirstCompletion) {
+    const clientIncrements = { termins: 1 };
+    if (!appointment.beautyPointsRedeemed) {
+      clientIncrements.wallet = appointment.price;
+    }
+
+    await models.Client.updateOne(
+      appointment.clientId
+        ? { id: appointment.clientId }
+        : { name: appointment.client_name, surname: appointment.client_surname },
+      { $inc: clientIncrements },
+    );
+  }
 
   res.json(appointment);
 }
@@ -111,15 +214,38 @@ export async function cancelAppointment(req, res) {
 
   const startsAt = new Date(existingAppointment.dayandhour.replace(" ", "T"));
   const minimumCancellationTime = 24 * 60 * 60 * 1000;
-  if (Number.isNaN(startsAt.getTime()) || startsAt.getTime() - Date.now() <= minimumCancellationTime) {
-    return res.status(400).json({ message: "Appointments can be cancelled only more than 24 hours before they start" });
+  if (Number.isNaN(startsAt.getTime()) || startsAt.getTime() <= Date.now()) {
+    return res.status(400).json({ message: "Appointments cannot be cancelled after they have started" });
+  }
+  if (existingAppointment.status !== "booked") {
+    return res.status(409).json({ message: "Only booked appointments can be cancelled" });
   }
 
+  const cancellationFee = startsAt.getTime() - Date.now() <= minimumCancellationTime
+    ? calculateCancellationFee(existingAppointment.price)
+    : 0;
+
   const appointment = await models.Appointment.findOneAndUpdate(
-    { id },
-    { status: "cancelled" },
+    { id, status: "booked" },
+    { status: "cancelled", cancellationFee, earningsAmount: cancellationFee },
     { new: true },
   ).lean();
+
+  if (!appointment) {
+    return res.status(409).json({ message: "Only booked appointments can be cancelled" });
+  }
+
+  if (cancellationFee) {
+    await models.Client.updateOne(
+      { name: existingAppointment.client_name, surname: existingAppointment.client_surname },
+      { $inc: { wallet: cancellationFee, cancelled: 1 } },
+    );
+  } else {
+    await models.Client.updateOne(
+      { name: existingAppointment.client_name, surname: existingAppointment.client_surname },
+      { $inc: { cancelled: 1 } },
+    );
+  }
 
   res.json(appointment);
 }
@@ -161,6 +287,7 @@ async function validateAppointmentAvailability(appointment, treatment) {
 
   const [date, time] = appointment.dayandhour.split(" ");
   if (!date || !time || !/^\d{2}:\d{2}$/.test(time)) return "Invalid appointment date or time";
+  if (!isFutureAppointment(appointment.dayandhour)) return "Appointments can be booked only in the future";
 
   const employee = await models.Employee.findOne({ name: appointment.beautician }).lean();
   if (!employee) return "Selected beautician does not exist";
@@ -192,6 +319,7 @@ function getAvailableTimes(employee, date, duration, appointments) {
 
   for (let minutes = start; minutes + duration <= end; minutes += 15) {
     const time = toTime(minutes);
+    if (!isFutureAppointment(`${date} ${time}`)) continue;
     const overlapsExisting = appointments.some((appointment) => {
       if (!isBlockingAppointment(appointment)) return false;
       if (appointment.beautician !== employee.name) return false;
@@ -231,7 +359,31 @@ async function isAppointmentOverlapping(appointment) {
 }
 
 function isBlockingAppointment(appointment) {
-  return appointment.status !== "cancelled" || Number(appointment.earningsAmount || 0) > 0;
+  return appointment.status !== "cancelled";
+}
+
+export function appointmentHasStarted(dayandhour, now = Date.now()) {
+  const startsAt = new Date(dayandhour.replace(" ", "T"));
+  return !Number.isNaN(startsAt.getTime()) && startsAt.getTime() <= now;
+}
+
+export function isFutureAppointment(dayandhour, now = Date.now()) {
+  const startsAt = new Date(dayandhour.replace(" ", "T"));
+  return !Number.isNaN(startsAt.getTime()) && startsAt.getTime() > now;
+}
+
+export function calculateCancellationFee(price) {
+  return Number(price || 0) / 2;
+}
+
+export function calculateAvailableBeautyPoints(client, settings = defaultLoyaltySettings) {
+  const earnedPoints =
+    Math.floor(Number(client?.wallet || 0) / Number(settings.eurosSpent)) * Number(settings.pointsEarned);
+  return Math.max(0, earnedPoints - Number(client?.spentBeautyPoints || 0));
+}
+
+export function calculateDiscountedPrice(price, discountPercentage) {
+  return Math.round(Number(price || 0) * (1 - Number(discountPercentage || 0) / 100) * 100) / 100;
 }
 
 function escapeRegex(value) {
