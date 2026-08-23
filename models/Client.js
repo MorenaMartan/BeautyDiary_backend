@@ -17,7 +17,7 @@ const clientSchema = new mongoose.Schema(
     surname: { type: String, default: "" },
     username: { type: String, required: true, unique: true, index: true },
     password: { type: String, required: true },
-    email: { type: String, default: "" },
+    email: { type: String, required: true, lowercase: true, trim: true },
     mobile: { type: String, default: "" },
     birthday: { type: String, default: "" },
     termins: { type: Number, default: 0 },
@@ -28,6 +28,11 @@ const clientSchema = new mongoose.Schema(
     createdAt: { type: Date, default: Date.now },
   },
   { id: false, versionKey: false },
+);
+
+clientSchema.index(
+  { email: 1 },
+  { unique: true, partialFilterExpression: { email: { $gt: "" } } },
 );
 
 export const Client = mongoose.model("Client", clientSchema);

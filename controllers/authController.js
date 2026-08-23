@@ -8,6 +8,7 @@ function publicUser(user, type) {
     name: user.name,
     surname: user.surname,
     username: user.username,
+    email: user.email,
     role: type === "client" ? "Client" : user.role,
     type,
   };
@@ -47,11 +48,18 @@ export async function signup(req, res) {
 
   const name = body.name || "New";
   const username = body.username || name;
+  const email = normalizeEmail(body.email);
+  if (!isValidEmail(email)) {
+    return res.status(400).json({ message: "A valid email is required" });
+  }
   const alreadyExists =
     (await models.Employee.exists(usernameQuery(username))) || (await models.Client.exists(usernameQuery(username)));
 
   if (alreadyExists) {
     return res.status(409).json({ message: "Username already exists" });
+  }
+  if (await models.Client.exists({ email })) {
+    return res.status(409).json({ message: "A client with this email already exists" });
   }
 
   const client = await models.Client.create({
@@ -60,7 +68,7 @@ export async function signup(req, res) {
     surname: body.surname || "Client",
     username,
     password: await bcrypt.hash(body.password, 12),
-    email: body.email || "",
+    email,
     mobile: body.mobile || "",
     birthday: body.birthday || "",
     diary: [{ date: "", text: "", expanded: false }],
@@ -112,6 +120,14 @@ async function upgradeLegacyPassword(Model, user, password) {
 
 function usernameQuery(username = "") {
   return { username: new RegExp(`^${escapeRegex(username)}$`, "i") };
+}
+
+function normalizeEmail(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function escapeRegex(value) {

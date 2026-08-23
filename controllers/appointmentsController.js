@@ -33,12 +33,7 @@ export async function getAppointments(req, res) {
 
   if (currentClient) {
     appointments = appointments.flatMap((appointment) => {
-      const isOwnAppointment =
-        appointment.clientId === currentClient.id ||
-        (
-          appointment.client_name === currentClient.name &&
-          appointment.client_surname === currentClient.surname
-        );
+      const isOwnAppointment = clientMatchesAppointment(currentClient, appointment);
       if (isOwnAppointment) return [appointment];
       if (appointment.status === "cancelled") return [];
 
@@ -57,14 +52,18 @@ export async function getAppointments(req, res) {
 
 export async function createAppointment(req, res) {
   const treatment = await findTreatment(req.body.treatment);
-  let currentClient = null;
+  const appointmentEmployee = await models.Employee.findOne(employeeIdentityQuery(req.body)).lean();
+  let appointmentClient;
 
   if (req.user.role === "Client") {
-    currentClient = await models.Client.findOne({ id: req.user.id }).lean();
-    if (!currentClient) return res.status(403).json({ message: "Client account not found" });
-    if (req.body.client_name !== currentClient.name || (req.body.client_surname || "") !== currentClient.surname) {
-      return res.status(403).json({ message: "Clients can create appointments only for themselves" });
-    }
+    appointmentClient = await models.Client.findOne({ id: req.user.id }).lean();
+    if (!appointmentClient) return res.status(403).json({ message: "Client account not found" });
+  } else {
+    const clientEmail = normalizeEmail(req.body.client_email);
+    if (!clientEmail) return res.status(400).json({ message: "Client email is required" });
+
+    appointmentClient = await models.Client.findOne({ email: clientEmail }).lean();
+    if (!appointmentClient) return res.status(400).json({ message: "A client with this email does not exist" });
   }
 
   const useBeautyPoints = req.body.useBeautyPoints === true;
@@ -79,12 +78,16 @@ export async function createAppointment(req, res) {
 
   const appointment = {
     id: await nextId(models.Appointment),
-    client_name: req.body.client_name,
-    client_surname: req.body.client_surname,
-    clientId: currentClient?.id,
+    client_name: appointmentClient.name,
+    client_surname: appointmentClient.surname,
+    client_email: normalizeEmail(appointmentClient.email),
+    clientId: appointmentClient.id,
     treatment: req.body.treatment,
     dayandhour: req.body.dayandhour,
-    beautician: req.body.beautician,
+    beautician: appointmentEmployee?.name || req.body.beautician,
+    beautician_surname: appointmentEmployee?.surname || "",
+    beautician_email: normalizeEmail(appointmentEmployee?.email),
+    beauticianId: appointmentEmployee?.id,
     price: useBeautyPoints
       ? calculateDiscountedPrice(originalPrice, loyaltySettings.discountPercentage)
       : originalPrice,
@@ -100,7 +103,7 @@ export async function createAppointment(req, res) {
     return res.status(400).json({ message: "Client, treatment, day/time and beautician are required" });
   }
 
-  const availabilityError = await validateAppointmentAvailability(appointment, treatment);
+  const availabilityError = await validateAppointmentAvailability(appointment, treatment, appointmentEmployee);
   if (availabilityError) {
     return res.status(400).json({ message: availabilityError });
   }
@@ -111,13 +114,13 @@ export async function createAppointment(req, res) {
 
   let reservedPoints = 0;
   if (useBeautyPoints) {
-    const availablePoints = calculateAvailableBeautyPoints(currentClient, loyaltySettings);
+    const availablePoints = calculateAvailableBeautyPoints(appointmentClient, loyaltySettings);
     if (availablePoints < loyaltySettings.pointsRequired) {
       return res.status(409).json({ message: "You do not have enough Beauty Points for this discount" });
     }
 
     const updatedClient = await models.Client.findOneAndUpdate(
-      { id: currentClient.id, spentBeautyPoints: currentClient.spentBeautyPoints || 0 },
+      { id: appointmentClient.id, spentBeautyPoints: appointmentClient.spentBeautyPoints || 0 },
       { $inc: { spentBeautyPoints: loyaltySettings.pointsRequired } },
       { new: true, runValidators: true },
     ).lean();
@@ -134,7 +137,7 @@ export async function createAppointment(req, res) {
   } catch (error) {
     if (reservedPoints) {
       await models.Client.updateOne(
-        { id: currentClient.id },
+        { id: appointmentClient.id },
         { $inc: { spentBeautyPoints: -reservedPoints } },
       );
     }
@@ -142,39 +145,43 @@ export async function createAppointment(req, res) {
   }
 }
 
+function employeeIdentityQuery(body) {
+  const beauticianId = Number(body.beauticianId);
+  if (Number.isInteger(beauticianId) && beauticianId > 0) return { id: beauticianId };
+
+  const beauticianEmail = normalizeEmail(body.beautician_email);
+  if (beauticianEmail) return { email: beauticianEmail };
+
+  return { name: body.beautician };
+}
+
 export async function updateAppointment(req, res) {
   const id = Number(req.params.id);
   const existingAppointment = await models.Appointment.findOne({ id }).lean();
   if (!existingAppointment) return res.status(404).json({ message: "Appointment not found" });
 
-  const updates = { ...req.body };
-  delete updates._id;
-  delete updates.id;
-
-  if (updates.status === "cancelled") {
-    return res.status(400).json({ message: "Use the cancellation endpoint to cancel an appointment" });
+  const requestedFields = Object.keys(req.body || {});
+  if (requestedFields.some((field) => field !== "status")) {
+    return res.status(400).json({ message: "Only appointment attendance status can be updated" });
   }
 
-  if (["completed", "no_show"].includes(updates.status) && !appointmentHasStarted(existingAppointment.dayandhour)) {
+  const status = req.body?.status;
+  if (!["completed", "no_show"].includes(status)) {
+    return res.status(400).json({ message: "Status must be completed or no-show" });
+  }
+  if (existingAppointment.status !== "booked") {
+    return res.status(409).json({ message: "Only booked appointments can receive an attendance status" });
+  }
+  if (!appointmentHasStarted(existingAppointment.dayandhour)) {
     return res.status(400).json({ message: "An appointment can be completed or marked as no-show only after it has started" });
   }
 
-  const updatedData = { ...existingAppointment, ...updates, id };
-
-  if (isBlockingAppointment(updatedData)) {
-    const treatment = await findTreatment(updatedData.treatment);
-    const availabilityError = await validateAppointmentAvailability(updatedData, treatment);
-    if (availabilityError) return res.status(400).json({ message: availabilityError });
-  }
-
-  if (isBlockingAppointment(updatedData) && (await isAppointmentOverlapping(updatedData))) {
-    return res.status(409).json({ message: "The beautician or client already has an overlapping appointment" });
-  }
-
-  const isFirstCompletion = updates.status === "completed" && existingAppointment.status !== "completed";
-  if (isFirstCompletion) updates.earningsAmount = Number(updatedData.price || 0);
-  const updateQuery = isFirstCompletion ? { id, status: existingAppointment.status } : { id };
-  const appointment = await models.Appointment.findOneAndUpdate(updateQuery, updates, {
+  const isCompletion = status === "completed";
+  const updates = {
+    status,
+    earningsAmount: isCompletion ? Number(existingAppointment.price || 0) : 0,
+  };
+  const appointment = await models.Appointment.findOneAndUpdate({ id, status: "booked" }, updates, {
     new: true,
     runValidators: true,
   }).lean();
@@ -183,16 +190,14 @@ export async function updateAppointment(req, res) {
     return res.status(409).json({ message: "Appointment status changed. Please try again" });
   }
 
-  if (isFirstCompletion) {
+  if (isCompletion) {
     const clientIncrements = { termins: 1 };
     if (!appointment.beautyPointsRedeemed) {
       clientIncrements.wallet = appointment.price;
     }
 
     await models.Client.updateOne(
-      appointment.clientId
-        ? { id: appointment.clientId }
-        : { name: appointment.client_name, surname: appointment.client_surname },
+      clientQueryForAppointment(appointment),
       { $inc: clientIncrements },
     );
   }
@@ -207,7 +212,7 @@ export async function cancelAppointment(req, res) {
 
   if (req.user.role === "Client") {
     const currentClient = await models.Client.findOne({ id: req.user.id }).lean();
-    if (!currentClient || existingAppointment.client_name !== currentClient.name || existingAppointment.client_surname !== currentClient.surname) {
+    if (!currentClient || !clientMatchesAppointment(currentClient, existingAppointment)) {
       return res.status(403).json({ message: "Clients can cancel only their own appointments" });
     }
   }
@@ -237,12 +242,12 @@ export async function cancelAppointment(req, res) {
 
   if (cancellationFee) {
     await models.Client.updateOne(
-      { name: existingAppointment.client_name, surname: existingAppointment.client_surname },
+      clientQueryForAppointment(existingAppointment),
       { $inc: { wallet: cancellationFee, cancelled: 1 } },
     );
   } else {
     await models.Client.updateOne(
-      { name: existingAppointment.client_name, surname: existingAppointment.client_surname },
+      clientQueryForAppointment(existingAppointment),
       { $inc: { cancelled: 1 } },
     );
   }
@@ -251,7 +256,14 @@ export async function cancelAppointment(req, res) {
 }
 
 export async function deleteAppointment(req, res) {
-  const appointment = await models.Appointment.findOneAndDelete({ id: Number(req.params.id) });
+  const id = Number(req.params.id);
+  const existingAppointment = await models.Appointment.findOne({ id }).lean();
+  if (!existingAppointment) return res.status(404).json({ message: "Appointment not found" });
+  if (existingAppointment.status === "completed") {
+    return res.status(409).json({ message: "Completed appointments cannot be deleted" });
+  }
+
+  const appointment = await models.Appointment.findOneAndDelete({ id, status: { $ne: "completed" } });
   if (!appointment) return res.status(404).json({ message: "Appointment not found" });
 
   res.sendStatus(204);
@@ -278,6 +290,9 @@ export async function getAvailability(req, res) {
 
   const available = employees.map((employee) => ({
     beautician: employee.name,
+    beautician_surname: employee.surname || "",
+    beautician_email: normalizeEmail(employee.email),
+    beauticianId: employee.id,
     times: getAvailableTimes(employee, date, selectedTreatment.duration, appointments),
   }));
 
@@ -288,17 +303,21 @@ async function findTreatment(name) {
   return models.Treatment.findOne({ name: new RegExp(`^${escapeRegex(name || "")}$`, "i") }).lean();
 }
 
-async function validateAppointmentAvailability(appointment, treatment) {
+async function validateAppointmentAvailability(appointment, treatment, selectedEmployee) {
   if (!treatment) return "Selected treatment does not exist";
 
   const [date, time] = appointment.dayandhour.split(" ");
   if (!date || !time || !/^\d{2}:\d{2}$/.test(time)) return "Invalid appointment date or time";
   if (!isFutureAppointment(appointment.dayandhour)) return "Appointments can be booked only in the future";
 
-  const employee = await models.Employee.findOne({ name: appointment.beautician }).lean();
+  const employee = selectedEmployee || await models.Employee.findOne({ name: appointment.beautician }).lean();
   if (!employee) return "Selected beautician does not exist";
   if (!employeeCanPerformTreatment(employee, treatment)) {
     return "Selected beautician is not qualified for this treatment";
+  }
+  if ((employee.vacations || []).some((vacation) =>
+    (typeof vacation === "string" ? vacation : vacation.date) === date)) {
+    return "Selected beautician is on vacation on this day";
   }
 
   const schedule = employee.schedule?.[dayName(date)];
@@ -338,7 +357,10 @@ function getAvailableTimes(employee, date, duration, appointments) {
     if (!isFutureAppointment(`${date} ${time}`)) continue;
     const overlapsExisting = appointments.some((appointment) => {
       if (!isBlockingAppointment(appointment)) return false;
-      if (appointment.beautician !== employee.name) return false;
+      const isSameEmployee = appointment.beauticianId
+        ? appointment.beauticianId === employee.id
+        : appointment.beautician === employee.name;
+      if (!isSameEmployee) return false;
 
       const [appointmentDate, appointmentTime] = appointment.dayandhour.split(" ");
       if (appointmentDate !== date) return false;
@@ -354,12 +376,16 @@ function getAvailableTimes(employee, date, duration, appointments) {
 
 async function isAppointmentOverlapping(appointment) {
   const [date, time] = appointment.dayandhour.split(" ");
+  const identities = [
+    { beauticianId: appointment.beauticianId },
+    appointment.client_email
+      ? { client_email: normalizeEmail(appointment.client_email) }
+      : { clientId: appointment.clientId },
+  ];
+  if (!appointment.beauticianId) identities[0] = { beautician: appointment.beautician };
   const query = {
     dayandhour: new RegExp(`^${escapeRegex(date)}`),
-    $or: [
-      { beautician: appointment.beautician },
-      { client_name: appointment.client_name, client_surname: appointment.client_surname },
-    ],
+    $or: identities,
   };
 
   if (appointment.id) query.id = { $ne: Number(appointment.id) };
@@ -400,6 +426,22 @@ export function calculateAvailableBeautyPoints(client, settings = defaultLoyalty
 
 export function calculateDiscountedPrice(price, discountPercentage) {
   return Math.round(Number(price || 0) * (1 - Number(discountPercentage || 0) / 100) * 100) / 100;
+}
+
+function clientMatchesAppointment(client, appointment) {
+  if (appointment.client_email) {
+    return normalizeEmail(appointment.client_email) === normalizeEmail(client.email);
+  }
+  return appointment.clientId === client.id;
+}
+
+function clientQueryForAppointment(appointment) {
+  if (appointment.client_email) return { email: normalizeEmail(appointment.client_email) };
+  return { id: appointment.clientId };
+}
+
+function normalizeEmail(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
 function escapeRegex(value) {

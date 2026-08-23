@@ -30,8 +30,7 @@ export async function createReview(req, res) {
     !appointment ||
     appointment.status !== "completed" ||
     appointment.beautician !== req.params.employee ||
-    appointment.client_name !== client.name ||
-    appointment.client_surname !== client.surname
+    !appointmentBelongsToClient(appointment, client)
   ) {
     return res.status(403).json({ message: "Reviews can be created only for your completed appointments" });
   }
@@ -43,8 +42,8 @@ export async function createReview(req, res) {
     comment: req.body.comment || "",
   };
 
-  if (!review.client || !review.rating) {
-    return res.status(400).json({ message: "Client and rating are required" });
+  if (!review.client || !Number.isInteger(review.rating) || review.rating < 1 || review.rating > 5) {
+    return res.status(400).json({ message: "Rating must be a whole number from 1 to 5" });
   }
 
   const employeeWithReview = await models.Employee.findOne({
@@ -63,4 +62,11 @@ export async function createReview(req, res) {
 
   if (!employee) return res.status(404).json({ message: "Employee not found" });
   res.status(201).json(review);
+}
+
+function appointmentBelongsToClient(appointment, client) {
+  if (appointment.client_email) {
+    return appointment.client_email.trim().toLowerCase() === (client.email || "").trim().toLowerCase();
+  }
+  return appointment.clientId === client.id;
 }

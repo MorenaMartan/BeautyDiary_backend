@@ -12,7 +12,7 @@ const reviewSchema = new mongoose.Schema(
   {
     appointmentId: { type: Number, required: true },
     client: { type: String, required: true },
-    rating: { type: Number, required: true },
+    rating: { type: Number, required: true, min: 1, max: 5 },
     comment: { type: String, default: "" },
     createdAt: { type: Date, default: Date.now },
   },

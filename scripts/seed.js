@@ -4,7 +4,13 @@ import { appointments } from "../data/appointments.js";
 import { clients } from "../data/clients.js";
 import { employees, specialties } from "../data/employees.js";
 import { treatments } from "../data/treatments.js";
-import { connectToDatabase, models, syncUsersCollection } from "../db.js";
+import {
+  connectToDatabase,
+  models,
+  syncAppointmentBeauticians,
+  syncAppointmentClientEmails,
+  syncUsersCollection,
+} from "../db.js";
 
 try {
   await connectToDatabase();
@@ -18,6 +24,8 @@ try {
   ]);
 
   await syncUsersCollection();
+  await syncAppointmentClientEmails();
+  await syncAppointmentBeauticians();
 
   console.log("MongoDB seed completed without deleting or replacing existing data.");
   await mongoose.connection.close();

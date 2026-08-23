@@ -1,5 +1,6 @@
 import { models, nextId, syncUsersCollection } from "../db.js";
 import bcrypt from "bcrypt";
+import { dayName } from "../utils/time.js";
 
 const emptySchedule = {
   Monday: { start: "-", end: "-" },
@@ -29,26 +30,46 @@ export async function getEmployee(req, res) {
 export async function createEmployee(req, res) {
   const body = req.body || {};
   const name = body.name?.trim();
+  const surname = body.surname?.trim();
   if (!name) return res.status(400).json({ message: "Employee name is required" });
+  if (!surname) return res.status(400).json({ message: "Employee surname is required" });
 
-  const username = (body.username || name).trim();
-  const alreadyExists = await models.User.exists({
-    username: new RegExp(`^${escapeRegex(username)}$`, "i"),
-  });
-
-  if (alreadyExists) {
-    return res.status(409).json({ message: "Employee with this username already exists" });
+  const employeesWithSameName = await models.Employee.find({
+    name: new RegExp(`^${escapeRegex(name)}$`, "i"),
+  }).lean();
+  const employeeId = await nextId(models.Employee);
+  const usernameAssignments = buildEmployeeUsernameAssignments([
+    ...employeesWithSameName,
+    { id: employeeId, name, surname },
+  ]);
+  if (!usernameAssignments) {
+    return res.status(409).json({
+      message: "Employees with the same name must have different surname initials",
+    });
   }
 
+  const groupIds = usernameAssignments.map((assignment) => assignment.id);
+  for (const assignment of usernameAssignments) {
+    const alreadyExists = await models.User.exists({
+      username: new RegExp(`^${escapeRegex(assignment.username)}$`, "i"),
+      $nor: [{ sourceType: "employee", sourceId: { $in: groupIds } }],
+    });
+    if (alreadyExists) {
+      return res.status(409).json({ message: `Username ${assignment.username} already exists` });
+    }
+  }
+
+  const username = usernameAssignments.find((assignment) => assignment.id === employeeId).username;
+
   const employee = await models.Employee.create({
-    id: await nextId(models.Employee),
+    id: employeeId,
     name,
-    surname: body.surname || "",
+    surname,
     email: body.email || "",
     mobile: body.mobile || "",
     birthday: body.birthday || "",
     username,
-    password: await bcrypt.hash(body.password || name.toLowerCase(), 12),
+    password: await bcrypt.hash(username.toLocaleLowerCase("hr-HR"), 12),
     role: body.role || "Beautician",
     specialties: body.specialties || [],
     treatments: body.treatments || [],
@@ -58,9 +79,35 @@ export async function createEmployee(req, res) {
     vacations: [],
   });
 
+  const existingUsernameUpdates = usernameAssignments.filter((assignment) => assignment.id !== employeeId);
+  if (existingUsernameUpdates.length) {
+    await models.Employee.bulkWrite(existingUsernameUpdates.map((assignment) => ({
+      updateOne: {
+        filter: { id: assignment.id },
+        update: { $set: { username: assignment.username } },
+      },
+    })));
+  }
+
   await syncUsersCollection();
 
   res.status(201).json(toPublicEmployee(employee));
+}
+
+function buildEmployeeUsernameAssignments(employees) {
+  const hasDuplicateName = employees.length > 1;
+  if (hasDuplicateName && employees.some((employee) => !employee.surname?.trim())) return null;
+
+  const assignments = employees.map((employee) => ({
+    id: employee.id,
+    username: hasDuplicateName
+      ? `${employee.name}${employee.surname?.trim().charAt(0).toLocaleUpperCase("hr-HR") || ""}`
+      : employee.name,
+  }));
+  const usernames = assignments.map((assignment) => assignment.username.toLocaleLowerCase("hr-HR"));
+
+  if (usernames.some((username) => !username) || new Set(usernames).size !== usernames.length) return null;
+  return assignments;
 }
 
 export async function updateEmployee(req, res) {
@@ -71,6 +118,9 @@ export async function updateEmployee(req, res) {
   if ("password" in updates && (typeof updates.password !== "string" || updates.password.length < 8)) {
     return res.status(400).json({ message: "Password must contain at least 8 characters" });
   }
+  const existingEmployee = await models.Employee.findOne({ id }).lean();
+  if (!existingEmployee) return res.status(404).json({ message: "Employee not found" });
+
   if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
   const employee = await models.Employee.findOneAndUpdate({ id }, updates, {
     new: true,
@@ -78,6 +128,7 @@ export async function updateEmployee(req, res) {
   }).lean();
 
   if (!employee) return res.status(404).json({ message: "Employee not found" });
+  await syncEmployeeAppointments(existingEmployee, employee);
   await syncUsersCollection();
   res.json(toPublicEmployee(employee));
 }
@@ -104,6 +155,9 @@ export async function updateEmployeeProfile(req, res) {
     return res.status(403).json({ message: "Employees can update only their own profile" });
   }
 
+  const existingEmployee = await models.Employee.findOne({ id }).lean();
+  if (!existingEmployee) return res.status(404).json({ message: "Employee not found" });
+
   const allowedFields = ["name", "surname", "email", "mobile", "birthday", "password"];
   const body = req.body || {};
   const updates = {};
@@ -123,6 +177,7 @@ export async function updateEmployeeProfile(req, res) {
   }).lean();
 
   if (!employee) return res.status(404).json({ message: "Employee not found" });
+  await syncEmployeeAppointments(existingEmployee, employee);
   await syncUsersCollection();
   res.json(toPublicEmployee(employee));
 }
@@ -175,6 +230,15 @@ export async function updateEmployeeSchedule(req, res) {
     return res.status(400).json({ message: "Enter a valid start and end time for every working day" });
   }
 
+  const existingEmployee = await models.Employee.findOne({ id }).lean();
+  if (!existingEmployee) return res.status(404).json({ message: "Employee not found" });
+  const bookedAppointments = await findBookedAppointmentsForEmployee(existingEmployee);
+  if (bookedAppointments.some((appointment) => appointmentConflictsWithSchedule(appointment, schedule))) {
+    return res.status(409).json({
+      message: "The schedule cannot be changed because it conflicts with an existing booked appointment",
+    });
+  }
+
   const employee = await models.Employee.findOneAndUpdate(
     { id },
     { schedule },
@@ -202,7 +266,7 @@ export async function updateEmployeeVacations(req, res) {
   }
 
   const uniqueVacations = [...new Set(vacations)].sort();
-  const existingEmployee = await models.Employee.findOne({ id }).select("vacationAllowance").lean();
+  const existingEmployee = await models.Employee.findOne({ id }).select("id name vacations vacationAllowance").lean();
   if (!existingEmployee) return res.status(404).json({ message: "Employee not found" });
 
   const vacationAllowance = existingEmployee.vacationAllowance ?? 20;
@@ -210,6 +274,19 @@ export async function updateEmployeeVacations(req, res) {
     return res.status(400).json({
       message: `This employee can select up to ${vacationAllowance} vacation days`,
     });
+  }
+
+  const addedVacations = uniqueVacations.filter((date) => !(existingEmployee.vacations || []).includes(date));
+  if (addedVacations.length) {
+    const bookedAppointments = await findBookedAppointmentsForEmployee(existingEmployee);
+    const conflictingAppointment = bookedAppointments.some((appointment) =>
+      addedVacations.includes(appointment.dayandhour?.split(" ")[0]),
+    );
+    if (conflictingAppointment) {
+      return res.status(409).json({
+        message: "Vacation cannot be selected while a booked appointment exists on that day",
+      });
+    }
   }
 
   const employee = await models.Employee.findOneAndUpdate(
@@ -349,6 +426,64 @@ function isValidSchedule(schedule) {
 function toMinutes(time) {
   const [hours, minutes] = time.split(":").map(Number);
   return hours * 60 + minutes;
+}
+
+async function findBookedAppointmentsForEmployee(employee) {
+  const employeesWithSameName = await models.Employee.countDocuments({ name: employee.name });
+  const identities = [{ beauticianId: employee.id }];
+  if (employeesWithSameName === 1) {
+    identities.push({ beauticianId: null, beautician: employee.name });
+  }
+
+  return models.Appointment.find({
+    status: "booked",
+    $or: identities,
+  }).lean();
+}
+
+function appointmentConflictsWithSchedule(appointment, schedule) {
+  const startsAt = new Date(appointment.dayandhour?.replace(" ", "T"));
+  if (Number.isNaN(startsAt.getTime()) || startsAt.getTime() <= Date.now()) return false;
+
+  const [date, time] = appointment.dayandhour.split(" ");
+  const workingHours = schedule[dayName(date)];
+  if (!workingHours || workingHours.start === "-" || workingHours.end === "-") return true;
+
+  const start = toMinutes(time);
+  const end = start + Number(appointment.duration || 60);
+  return start < toMinutes(workingHours.start) || end > toMinutes(workingHours.end);
+}
+
+async function syncEmployeeAppointments(existingEmployee, employee) {
+  const identityChanged =
+    existingEmployee.name !== employee.name ||
+    (existingEmployee.surname || "") !== (employee.surname || "") ||
+    (existingEmployee.email || "").trim().toLowerCase() !== (employee.email || "").trim().toLowerCase();
+  if (!identityChanged) return;
+
+  const employeesWithOldName = await models.Employee.countDocuments({ name: existingEmployee.name });
+  const identities = [{ beauticianId: employee.id }];
+  const nameChanged = existingEmployee.name !== employee.name;
+  const canSyncLegacyAppointments = nameChanged
+    ? employeesWithOldName === 0
+    : employeesWithOldName === 1;
+  if (canSyncLegacyAppointments) {
+    identities.push({ beauticianId: null, beautician: existingEmployee.name });
+  }
+
+  await models.Appointment.updateMany(
+    {
+      $or: identities,
+    },
+    {
+      $set: {
+        beauticianId: employee.id,
+        beautician: employee.name,
+        beautician_surname: employee.surname || "",
+        beautician_email: (employee.email || "").trim().toLowerCase(),
+      },
+    },
+  );
 }
 
 function escapeRegex(value) {

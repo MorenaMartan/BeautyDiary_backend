@@ -17,6 +17,8 @@ export async function connectToDatabase() {
   await mongoose.connect(uri, options);
   await ensureDefaultSpecialties();
   await syncUsersCollection();
+  await syncAppointmentClientEmails();
+  await syncAppointmentBeauticians();
   console.log(`Spojeno na MongoDB: ${mongoose.connection.name}`);
 }
 
@@ -83,6 +85,65 @@ export async function syncUsersCollection() {
 
   if (operations.length) {
     await User.bulkWrite(operations);
+  }
+}
+
+export async function syncAppointmentClientEmails() {
+  const clients = await Client.find().select("id name surname email").lean();
+  const nameCounts = clients.reduce((counts, client) => {
+    const key = `${client.name}\u0000${client.surname || ""}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+    return counts;
+  }, new Map());
+
+  for (const client of clients) {
+    if (!client.email) continue;
+
+    await Appointment.updateMany(
+      { clientId: client.id },
+      { $set: { client_email: client.email } },
+    );
+
+    const key = `${client.name}\u0000${client.surname || ""}`;
+    if (nameCounts.get(key) === 1) {
+      await Appointment.updateMany(
+        {
+          client_email: { $in: [null, ""] },
+          client_name: client.name,
+          client_surname: client.surname || "",
+        },
+        { $set: { clientId: client.id, client_email: client.email } },
+      );
+    }
+  }
+}
+
+export async function syncAppointmentBeauticians() {
+  const employees = await Employee.find().select("id name surname email").lean();
+  const nameCounts = employees.reduce((counts, employee) => {
+    counts.set(employee.name, (counts.get(employee.name) || 0) + 1);
+    return counts;
+  }, new Map());
+
+  for (const employee of employees) {
+    const identity = {
+      beauticianId: employee.id,
+      beautician: employee.name,
+      beautician_surname: employee.surname || "",
+      beautician_email: (employee.email || "").trim().toLowerCase(),
+    };
+
+    await Appointment.updateMany(
+      { beauticianId: employee.id },
+      { $set: identity },
+    );
+
+    if (nameCounts.get(employee.name) === 1) {
+      await Appointment.updateMany(
+        { beauticianId: { $exists: false }, beautician: employee.name },
+        { $set: identity },
+      );
+    }
   }
 }
 
