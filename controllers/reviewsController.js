@@ -1,13 +1,21 @@
 import { models } from "../db.js";
 
 export async function getReviews(req, res) {
-  const { employee } = req.query;
-  const query = employee ? { name: employee } : {};
+  const { employeeId, employee } = req.query;
+  const parsedEmployeeId = Number(employeeId);
+  if (employeeId !== undefined && (!Number.isInteger(parsedEmployeeId) || parsedEmployeeId <= 0)) {
+    return res.status(400).json({ message: "Employee id must be a positive whole number" });
+  }
+
+  const query = employeeId !== undefined ? { id: parsedEmployeeId } : employee ? { name: employee } : {};
   const employees = await models.Employee.find(query).sort({ id: 1 }).lean();
 
   res.json(
     employees.map((e) => ({
+      employeeId: e.id,
       employee: e.name,
+      employeeSurname: e.surname,
+      username: e.username,
       average: e.reviews.length
         ? e.reviews.reduce((sum, review) => sum + Number(review.rating), 0) / e.reviews.length
         : 0,
@@ -24,11 +32,14 @@ export async function createReview(req, res) {
   const appointmentId = Number(req.body.appointmentId);
   const client = await models.Client.findOne({ id: req.user.id }).lean();
   const appointment = await models.Appointment.findOne({ id: appointmentId }).lean();
+  const beauticianId = Number(appointment?.beauticianId);
 
   if (
     !client ||
     !appointment ||
     appointment.status !== "completed" ||
+    !Number.isInteger(beauticianId) ||
+    beauticianId <= 0 ||
     appointment.beautician !== req.params.employee ||
     !appointmentBelongsToClient(appointment, client)
   ) {
@@ -47,7 +58,7 @@ export async function createReview(req, res) {
   }
 
   const employeeWithReview = await models.Employee.findOne({
-    name: req.params.employee,
+    id: beauticianId,
     "reviews.appointmentId": appointmentId,
   }).lean();
   if (employeeWithReview) {
@@ -55,7 +66,7 @@ export async function createReview(req, res) {
   }
 
   const employee = await models.Employee.findOneAndUpdate(
-    { name: req.params.employee },
+    { id: beauticianId },
     { $push: { reviews: review } },
     { new: true },
   ).lean();

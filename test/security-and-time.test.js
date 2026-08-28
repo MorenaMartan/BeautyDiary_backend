@@ -21,6 +21,8 @@ const {
 } = await import("../controllers/appointmentsController.js");
 const {
   createEmployee,
+  deleteEmployee,
+  deleteSpecialty,
   updateEmployee,
   updateEmployeeProfile,
   updateEmployeeSchedule,
@@ -32,17 +34,17 @@ const {
   getProductOrders,
   updateProductOrder,
 } = await import("../controllers/productOrdersController.js");
-const { signup } = await import("../controllers/authController.js");
+const { register } = await import("../controllers/authController.js");
 const {
   createClient,
   deleteClient,
   getClientStats,
   sanitizeClientUpdates,
 } = await import("../controllers/clientsController.js");
-const { createReview } = await import("../controllers/reviewsController.js");
+const { createReview, getReviews } = await import("../controllers/reviewsController.js");
 const { models } = await import("../db.js");
 
-test("signup requires a password with at least 8 characters", async () => {
+test("registration validates the password, email address, mobile number and minimum age", async () => {
   for (const password of [undefined, "", "short"]) {
     let status;
     let response;
@@ -52,10 +54,74 @@ test("signup requires a password with at least 8 characters", async () => {
       json: (body) => { response = body; },
     };
 
-    await signup(req, res);
+    await register(req, res);
 
     assert.equal(status, 400);
     assert.equal(response.message, "Password must contain at least 8 characters");
+  }
+
+  for (const email of [undefined, "", "dad@s", "dad@example.c"]) {
+    let status;
+    let response;
+    const req = { body: { name: "New", password: "password123", email } };
+    const res = {
+      status: (code) => { status = code; return res; },
+      json: (body) => { response = body; },
+    };
+
+    await register(req, res);
+
+    assert.equal(status, 400);
+    assert.equal(response.message, "A valid email is required");
+  }
+
+  for (const mobile of ["091 123 4567", "+385911234567", "091abc"]) {
+    let status;
+    let response;
+    const req = {
+      body: { name: "New", password: "password123", email: "new@example.com", mobile },
+    };
+    const res = {
+      status: (code) => { status = code; return res; },
+      json: (body) => { response = body; },
+    };
+
+    await register(req, res);
+
+    assert.equal(status, 400);
+    assert.equal(response.message, "Mobile number can contain only digits");
+  }
+
+  const underageBirthday = new Date();
+  underageBirthday.setUTCFullYear(underageBirthday.getUTCFullYear() - 17);
+  const invalidBirthdays = [
+    undefined,
+    "",
+    underageBirthday.toISOString().slice(0, 10),
+    "2024-02-30",
+    "not-a-date",
+  ];
+  for (const birthday of invalidBirthdays) {
+    let status;
+    let response;
+    const req = {
+      body: {
+        name: "New",
+        password: "password123",
+        email: "new@example.com",
+        mobile: "0911234567",
+        birthday,
+      },
+    };
+    const res = {
+      status: (code) => { status = code; return res; },
+      json: (body) => { response = body; },
+    };
+
+    await register(req, res);
+
+    assert.equal(status, 400);
+    assert.equal(response.message, "You must be at least 18 years old");
   }
 });
 
@@ -113,7 +179,7 @@ test("employees with the same name receive surname-initial usernames and a lower
   try {
     let status;
     let response;
-    const req = { body: { name: "Maja", surname: "Horvat" } };
+    const req = { body: { name: "Maja", surname: "Horvat", birthday: "1990-01-01" } };
     const res = {
       status: (code) => { status = code; return res; },
       json: (body) => { response = body; },
@@ -739,9 +805,16 @@ test("appointments cannot be created on a beautician vacation day", async () => 
   }
 });
 
-test("review ratings must be whole numbers from 1 to 5", async () => {
-  const originalClientFindOne = models.Client.findOne;
-  const originalAppointmentFindOne = models.Appointment.findOne;
+test("review ratings are limited to 1-5 and reviews use beautician ids", async () => {
+  const originals = {
+    clientFindOne: models.Client.findOne,
+    appointmentFindOne: models.Appointment.findOne,
+    employeeFind: models.Employee.find,
+    employeeFindOne: models.Employee.findOne,
+    employeeFindOneAndUpdate: models.Employee.findOneAndUpdate,
+  };
+  const queries = {};
+
   models.Client.findOne = () => ({
     lean: async () => ({ id: 9, name: "Marta", surname: "Maric", email: "marta@example.com" }),
   });
@@ -750,6 +823,7 @@ test("review ratings must be whole numbers from 1 to 5", async () => {
       id: 12,
       client_email: "marta@example.com",
       beautician: "Maja",
+      beauticianId: 17,
       status: "completed",
     }),
   });
@@ -767,9 +841,61 @@ test("review ratings must be whole numbers from 1 to 5", async () => {
       await createReview(req, res);
       assert.equal(status, 400);
     }
+
+    models.Employee.findOne = (query) => ({
+      lean: async () => {
+        queries.duplicate = query;
+        return null;
+      },
+    });
+    models.Employee.findOneAndUpdate = (query, update) => ({
+      lean: async () => {
+        queries.update = { query, update };
+        return { id: 17, name: "Maja" };
+      },
+    });
+
+    let status;
+    let response;
+    const req = {
+      user: { id: 9, role: "Client" },
+      params: { employee: "Maja" },
+      body: { appointmentId: 12, rating: 5, comment: "Odlično" },
+    };
+    const res = {
+      status: (code) => { status = code; return res; },
+      json: (body) => { response = body; },
+    };
+
+    await createReview(req, res);
+
+    assert.equal(status, 201);
+    assert.equal(response.appointmentId, 12);
+    assert.deepEqual(queries.duplicate, { id: 17, "reviews.appointmentId": 12 });
+    assert.deepEqual(queries.update.query, { id: 17 });
+
+    models.Employee.find = (query) => ({
+      sort: () => ({
+        lean: async () => {
+          queries.list = query;
+          return [{ id: 17, name: "Maja", surname: "Horvat", username: "MajaH", reviews: [response] }];
+        },
+      }),
+    });
+    let listedReviews;
+    await getReviews(
+      { query: { employeeId: "17" } },
+      { json: (body) => { listedReviews = body; } },
+    );
+    assert.deepEqual(queries.list, { id: 17 });
+    assert.equal(listedReviews[0].employeeId, 17);
+    assert.equal(listedReviews[0].username, "MajaH");
   } finally {
-    models.Client.findOne = originalClientFindOne;
-    models.Appointment.findOne = originalAppointmentFindOne;
+    models.Client.findOne = originals.clientFindOne;
+    models.Appointment.findOne = originals.appointmentFindOne;
+    models.Employee.find = originals.employeeFind;
+    models.Employee.findOne = originals.employeeFindOne;
+    models.Employee.findOneAndUpdate = originals.employeeFindOneAndUpdate;
   }
 });
 
@@ -1063,5 +1189,97 @@ test("renaming a beautician keeps existing appointments linked by employee id", 
     models.Client.find = originals.clientFind;
     models.Appointment.updateMany = originals.appointmentUpdateMany;
     models.User.bulkWrite = originals.userBulkWrite;
+  }
+});
+
+test("employees with future booked appointments cannot be deleted", async () => {
+  const originals = {
+    employeeFindOne: models.Employee.findOne,
+    employeeCountDocuments: models.Employee.countDocuments,
+    employeeDeleteOne: models.Employee.deleteOne,
+    appointmentFind: models.Appointment.find,
+    userDeleteOne: models.User.deleteOne,
+  };
+  let employeeDeleted = false;
+  let userDeleted = false;
+
+  models.Employee.findOne = () => ({
+    lean: async () => ({ id: 2, name: "Maja" }),
+  });
+  models.Employee.countDocuments = async () => 1;
+  models.Appointment.find = () => ({
+    lean: async () => [{ id: 15, dayandhour: "2099-06-01 10:00", status: "booked" }],
+  });
+  models.Employee.deleteOne = async () => {
+    employeeDeleted = true;
+    return { deletedCount: 1 };
+  };
+  models.User.deleteOne = async () => {
+    userDeleted = true;
+  };
+
+  try {
+    let status;
+    let response;
+    const req = { params: { id: "2" } };
+    const res = {
+      status: (code) => { status = code; return res; },
+      json: (body) => { response = body; },
+      sendStatus: (code) => { status = code; },
+    };
+
+    await deleteEmployee(req, res);
+
+    assert.equal(status, 409);
+    assert.equal(response.message, "Employee cannot be deleted while future booked appointments exist");
+    assert.equal(employeeDeleted, false);
+    assert.equal(userDeleted, false);
+  } finally {
+    models.Employee.findOne = originals.employeeFindOne;
+    models.Employee.countDocuments = originals.employeeCountDocuments;
+    models.Employee.deleteOne = originals.employeeDeleteOne;
+    models.Appointment.find = originals.appointmentFind;
+    models.User.deleteOne = originals.userDeleteOne;
+  }
+});
+
+test("specialties used by treatments cannot be deleted", async () => {
+  const originals = {
+    treatmentFindOne: models.Treatment.findOne,
+    specialtyDeleteOne: models.Specialty.deleteOne,
+    employeeUpdateMany: models.Employee.updateMany,
+  };
+  let specialtyDeleted = false;
+  let employeesUpdated = false;
+
+  models.Treatment.findOne = () => ({
+    lean: async () => ({ id: 4, name: "Relax massage", specialty: "Massage" }),
+  });
+  models.Specialty.deleteOne = async () => {
+    specialtyDeleted = true;
+  };
+  models.Employee.updateMany = async () => {
+    employeesUpdated = true;
+  };
+
+  try {
+    let status;
+    let response;
+    const req = { params: { name: "Massage" } };
+    const res = {
+      status: (code) => { status = code; return res; },
+      json: (body) => { response = body; },
+    };
+
+    await deleteSpecialty(req, res);
+
+    assert.equal(status, 409);
+    assert.equal(response.message, "Move or delete this specialty's treatments before deleting the specialty");
+    assert.equal(specialtyDeleted, false);
+    assert.equal(employeesUpdated, false);
+  } finally {
+    models.Treatment.findOne = originals.treatmentFindOne;
+    models.Specialty.deleteOne = originals.specialtyDeleteOne;
+    models.Employee.updateMany = originals.employeeUpdateMany;
   }
 });

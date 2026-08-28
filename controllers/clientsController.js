@@ -1,4 +1,4 @@
-import { models, nextId, syncUsersCollection } from "../db.js";
+import { models, nextId, syncUserRecord, syncUsersCollection } from "../db.js";
 import bcrypt from "bcrypt";
 
 export async function getClients(req, res) {
@@ -84,6 +84,12 @@ export async function createClient(req, res) {
     return res.status(400).json({ message: "Password must contain at least 8 characters" });
   }
   if (!isValidEmail(email)) return res.status(400).json({ message: "A valid client email is required" });
+  if (!isValidMobile(body.mobile)) {
+    return res.status(400).json({ message: "Mobile number can contain only digits" });
+  }
+  if (!isValidBirthday(body.birthday)) {
+    return res.status(400).json({ message: "Client must be at least 18 years old" });
+  }
 
   const alreadyExists = await models.User.exists({
     username: new RegExp(`^${escapeRegex(username)}$`, "i"),
@@ -133,6 +139,12 @@ export async function updateClient(req, res) {
     const emailOwner = await models.Client.exists({ email: updates.email, id: { $ne: id } });
     if (emailOwner) return res.status(409).json({ message: "A client with this email already exists" });
   }
+  if ("mobile" in updates && !isValidMobile(updates.mobile)) {
+    return res.status(400).json({ message: "Mobile number can contain only digits" });
+  }
+  if ("birthday" in updates && updates.birthday !== "" && !isValidBirthday(updates.birthday)) {
+    return res.status(400).json({ message: "Client must be at least 18 years old" });
+  }
   if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
   const client = await models.Client.findOneAndUpdate({ id }, updates, {
     new: true,
@@ -150,7 +162,7 @@ export async function updateClient(req, res) {
       { $set: { client_email: updates.email } },
     );
   }
-  await syncUsersCollection();
+  await syncUserRecord(client, "client");
   res.json(toPublicClient(client));
 }
 
@@ -234,7 +246,26 @@ function normalizeEmail(value) {
 }
 
 function isValidEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
+}
+
+function isValidMobile(value) {
+  return value === undefined || value === "" || (typeof value === "string" && /^\d+$/.test(value));
+}
+
+function isValidBirthday(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+  const [year, month, day] = value.split("-").map(Number);
+  const birthday = new Date(Date.UTC(year, month - 1, day));
+  const isRealDate =
+    birthday.getUTCFullYear() === year &&
+    birthday.getUTCMonth() === month - 1 &&
+    birthday.getUTCDate() === day;
+  const adultBirthDate = new Date();
+  adultBirthDate.setUTCHours(0, 0, 0, 0);
+  adultBirthDate.setUTCFullYear(adultBirthDate.getUTCFullYear() - 18);
+  return isRealDate && birthday <= adultBirthDate;
 }
 
 function escapeRegex(value) {

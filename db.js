@@ -88,6 +88,27 @@ export async function syncUsersCollection() {
   }
 }
 
+export async function syncUserRecord(source, sourceType) {
+  const isClient = sourceType === "client";
+  await User.updateOne(
+    { sourceId: source.id, sourceType },
+    {
+      $set: {
+        sourceId: source.id,
+        sourceType,
+        name: source.name,
+        surname: source.surname || "",
+        username: source.username,
+        password: source.password,
+        role: isClient ? "Client" : source.role,
+        email: source.email || "",
+        mobile: source.mobile || "",
+      },
+    },
+    { upsert: true },
+  );
+}
+
 export async function syncAppointmentClientEmails() {
   const clients = await Client.find().select("id name surname email").lean();
   const nameCounts = clients.reduce((counts, client) => {

@@ -40,7 +40,7 @@ export async function login(req, res) {
   return res.status(401).json({ message: "Wrong username or password" });
 }
 
-export async function signup(req, res) {
+export async function register(req, res) {
   const body = req.body || {};
   if (typeof body.password !== "string" || body.password.trim().length < 8) {
     return res.status(400).json({ message: "Password must contain at least 8 characters" });
@@ -51,6 +51,12 @@ export async function signup(req, res) {
   const email = normalizeEmail(body.email);
   if (!isValidEmail(email)) {
     return res.status(400).json({ message: "A valid email is required" });
+  }
+  if (!isValidMobile(body.mobile)) {
+    return res.status(400).json({ message: "Mobile number can contain only digits" });
+  }
+  if (!isValidBirthday(body.birthday)) {
+    return res.status(400).json({ message: "You must be at least 18 years old" });
   }
   const alreadyExists =
     (await models.Employee.exists(usernameQuery(username))) || (await models.Client.exists(usernameQuery(username)));
@@ -127,7 +133,26 @@ function normalizeEmail(value) {
 }
 
 function isValidEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
+}
+
+function isValidMobile(value) {
+  return value === undefined || value === "" || (typeof value === "string" && /^\d+$/.test(value));
+}
+
+function isValidBirthday(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+  const [year, month, day] = value.split("-").map(Number);
+  const birthday = new Date(Date.UTC(year, month - 1, day));
+  const isRealDate =
+    birthday.getUTCFullYear() === year &&
+    birthday.getUTCMonth() === month - 1 &&
+    birthday.getUTCDate() === day;
+  const adultBirthDate = new Date();
+  adultBirthDate.setUTCHours(0, 0, 0, 0);
+  adultBirthDate.setUTCFullYear(adultBirthDate.getUTCFullYear() - 18);
+  return isRealDate && birthday <= adultBirthDate;
 }
 
 function escapeRegex(value) {

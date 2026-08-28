@@ -50,7 +50,7 @@ scripts/seed.js           puni MongoDB početnim podacima
 ## Glavne rute
 
 - `POST /api/auth/login`
-- `POST /api/auth/signup`
+- `POST /api/auth/register`
 - `GET /api/clients`
 - `GET /api/clients/stats`
 - `POST /api/clients`

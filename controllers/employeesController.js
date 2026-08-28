@@ -1,4 +1,4 @@
-import { models, nextId, syncUsersCollection } from "../db.js";
+import { models, nextId, syncUserRecord, syncUsersCollection } from "../db.js";
 import bcrypt from "bcrypt";
 import { dayName } from "../utils/time.js";
 
@@ -33,6 +33,12 @@ export async function createEmployee(req, res) {
   const surname = body.surname?.trim();
   if (!name) return res.status(400).json({ message: "Employee name is required" });
   if (!surname) return res.status(400).json({ message: "Employee surname is required" });
+  if (!isValidMobile(body.mobile)) {
+    return res.status(400).json({ message: "Mobile number can contain only digits" });
+  }
+  if (!isValidBirthday(body.birthday)) {
+    return res.status(400).json({ message: "Employee must be at least 18 years old" });
+  }
 
   const employeesWithSameName = await models.Employee.find({
     name: new RegExp(`^${escapeRegex(name)}$`, "i"),
@@ -118,6 +124,12 @@ export async function updateEmployee(req, res) {
   if ("password" in updates && (typeof updates.password !== "string" || updates.password.length < 8)) {
     return res.status(400).json({ message: "Password must contain at least 8 characters" });
   }
+  if ("mobile" in updates && !isValidMobile(updates.mobile)) {
+    return res.status(400).json({ message: "Mobile number can contain only digits" });
+  }
+  if ("birthday" in updates && updates.birthday !== "" && !isValidBirthday(updates.birthday)) {
+    return res.status(400).json({ message: "Employee must be at least 18 years old" });
+  }
   const existingEmployee = await models.Employee.findOne({ id }).lean();
   if (!existingEmployee) return res.status(404).json({ message: "Employee not found" });
 
@@ -137,8 +149,22 @@ export async function deleteEmployee(req, res) {
   const id = parseId(req.params.id);
   if (!id) return res.status(400).json({ message: "Invalid employee id" });
 
-  const employee = await models.Employee.findOneAndDelete({ id });
+  const employee = await models.Employee.findOne({ id }).lean();
   if (!employee) return res.status(404).json({ message: "Employee not found" });
+
+  const bookedAppointments = await findBookedAppointmentsForEmployee(employee);
+  const hasFutureAppointment = bookedAppointments.some((appointment) => {
+    const startsAt = new Date(appointment.dayandhour?.replace(" ", "T"));
+    return !Number.isNaN(startsAt.getTime()) && startsAt.getTime() > Date.now();
+  });
+  if (hasFutureAppointment) {
+    return res.status(409).json({
+      message: "Employee cannot be deleted while future booked appointments exist",
+    });
+  }
+
+  const deletion = await models.Employee.deleteOne({ id });
+  if (!deletion.deletedCount) return res.status(404).json({ message: "Employee not found" });
 
   await models.User.deleteOne({ sourceId: id, sourceType: "employee" });
   res.sendStatus(204);
@@ -169,6 +195,12 @@ export async function updateEmployeeProfile(req, res) {
   if ("password" in updates && (typeof updates.password !== "string" || updates.password.length < 8)) {
     return res.status(400).json({ message: "Password must contain at least 8 characters" });
   }
+  if ("mobile" in updates && !isValidMobile(updates.mobile)) {
+    return res.status(400).json({ message: "Mobile number can contain only digits" });
+  }
+  if ("birthday" in updates && updates.birthday !== "" && !isValidBirthday(updates.birthday)) {
+    return res.status(400).json({ message: "Employee must be at least 18 years old" });
+  }
   if (updates.password) updates.password = await bcrypt.hash(updates.password, 12);
 
   const employee = await models.Employee.findOneAndUpdate({ id }, updates, {
@@ -178,7 +210,7 @@ export async function updateEmployeeProfile(req, res) {
 
   if (!employee) return res.status(404).json({ message: "Employee not found" });
   await syncEmployeeAppointments(existingEmployee, employee);
-  await syncUsersCollection();
+  await syncUserRecord(employee, "employee");
   res.json(toPublicEmployee(employee));
 }
 
@@ -350,6 +382,15 @@ export async function createSpecialty(req, res) {
 export async function deleteSpecialty(req, res) {
   const name = decodeURIComponent(req.params.name);
 
+  const treatment = await models.Treatment.findOne({
+    specialty: new RegExp(`^${escapeRegex(name)}$`, "i"),
+  }).lean();
+  if (treatment) {
+    return res.status(409).json({
+      message: "Move or delete this specialty's treatments before deleting the specialty",
+    });
+  }
+
   await models.Specialty.deleteOne({ name });
   await models.Employee.updateMany({}, { $pull: { specialties: name } });
 
@@ -488,6 +529,25 @@ async function syncEmployeeAppointments(existingEmployee, employee) {
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isValidMobile(value) {
+  return value === undefined || value === "" || (typeof value === "string" && /^\d+$/.test(value));
+}
+
+function isValidBirthday(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+  const [year, month, day] = value.split("-").map(Number);
+  const birthday = new Date(Date.UTC(year, month - 1, day));
+  const isRealDate =
+    birthday.getUTCFullYear() === year &&
+    birthday.getUTCMonth() === month - 1 &&
+    birthday.getUTCDate() === day;
+  const adultBirthDate = new Date();
+  adultBirthDate.setUTCHours(0, 0, 0, 0);
+  adultBirthDate.setUTCFullYear(adultBirthDate.getUTCFullYear() - 18);
+  return isRealDate && birthday <= adultBirthDate;
 }
 
 function toPublicEmployee(employee) {
