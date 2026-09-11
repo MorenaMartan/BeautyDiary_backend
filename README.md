@@ -1,83 +1,65 @@
-# BeautyDiary Backend
+# BeautyDiary – backend
 
-Express/Node.js API za BeautyDiary aplikaciju spojen na MongoDB.
+Backend web aplikacije izrađene u sklopu završnog rada „BeautyDiary – web aplikacija za naručivanje, evidenciju i praćenje potrošnje klijenata kozmetičkog salona“.
 
-Podaci se spremaju u MongoDB kroz Mongoose modele. Datoteke u `data/` služe samo kao početni seed podaci.
+**Autor:** Morena Martan
 
-## Pokretanje
+**Mentor:** izv. prof. dr. sc. Nikola Tanković
 
-```bash
-npm install
-npm run seed
-npm start
-```
+**Ustanova:** Sveučilište Jurja Dobrile u Puli, Fakultet informatike
 
-Server se pokreće na:
+**Godina:** 2026.
 
-```text
-http://localhost:3000
-```
+## O projektu
 
-Ako koristiš lokalni MongoDB, može ostati default vrijednost:
+BeautyDiary je web aplikacija namijenjena digitalizaciji poslovanja kozmetičkog salona. Sustav objedinjuje upravljanje klijentima, zaposlenicima, tretmanima, terminima, recenzijama, potrošnjom i narudžbama proizvoda te omogućuje praćenje rada salona iz uloga klijenta, kozmetičara i administratora.
 
-```text
-mongodb://127.0.0.1:27017/beautydiary
-```
+Ovaj repozitorij sadrži REST API, poslovnu logiku, modele podataka i autentikaciju sustava. Backend provjerava i obrađuje zahtjeve frontend aplikacije te podatke pohranjuje u MongoDB bazu putem Mongoosea.
 
-MongoDB Atlas connection string je postavljen u `.env`. Prije pokretanja samo zamijeni `<db_password>` stvarnom lozinkom korisnika `mmartan_db_user`:
+## Funkcionalnosti
 
-```text
-PORT=3000
-MONGODB_URI=mongodb+srv://mmartan_db_user:<db_password>@cluster0.wqgwemc.mongodb.net/beautydiary?appName=Cluster0
-```
+- registracija i prijava korisnika uz JWT autentikaciju
+- autorizacija prema ulogama Client, Beautician i Admin
+- upravljanje profilima klijenata i zaposlenika
+- upravljanje tretmanima, cjenikom i kategorijama tretmana
+- definiranje radnog vremena, godišnjih odmora i dostupnosti zaposlenika
+- rezervacija termina uz provjeru tretmana, stručnosti zaposlenika i radnog vremena
+- sprječavanje preklapanja termina klijenta i zaposlenika
+- praćenje statusa termina: `booked`, `cancelled`, `completed` i `no_show`
+- obračun naknade za kasno otkazivanje termina
+- evidencija potrošnje klijenata i sustav Beauty Points pogodnosti
+- vođenje dnevnika tretmana i statistike klijenata
+- ocjenjivanje zaposlenika nakon završenog termina
+- upravljanje narudžbama proizvoda i materijala
+- dnevna i mjesečna analitika prodaje i zarade
+- sinkronizacija korisničkih računa i podataka povezanih termina
+- početno punjenje baze podacima bez brisanja postojećih zapisa
+- validacija ulaznih podataka i centralizirana obrada pogrešaka
 
-Ako lozinka ima posebne znakove, treba ih URL-encodeati prije upisa u URI.
+## Poveznice
 
-## Struktura
+- Backend API: https://beautydiarybackend-production.up.railway.app/api/health
+- Frontend repozitorij: https://github.com/MorenaMartan/BeautyDiary_frontend
+- Backend repozitorij: https://github.com/MorenaMartan/BeautyDiary_backend
 
-```text
-server.js                 glavna Express aplikacija
-db.js                     MongoDB konekcija i helperi
-models/                   Mongoose modeli za MongoDB kolekcije
-data/                     početni seed podaci
-controllers/              logika za svaku karticu/funkcionalnost
-routes/                   API rute
-middleware/roles.js       jednostavna provjera admin role
-utils/time.js             pomoćne funkcije za raspored i zauzete termine
-scripts/seed.js           puni MongoDB početnim podacima
-```
+## Demo račun
 
-## Glavne rute
-
-- `POST /api/auth/login`
-- `POST /api/auth/register`
-- `GET /api/clients`
-- `GET /api/clients/stats`
-- `POST /api/clients`
-- `PATCH /api/clients/:id`
-- `POST /api/clients/:id/diary`
-- `GET /api/employees`
-- `POST /api/employees` - samo admin (`x-user-role: Admin`)
-- `GET /api/employees/specialties`
-- `POST /api/employees/specialties` - samo admin
-- `GET /api/treatments`
-- `POST /api/treatments` - samo admin
-- `GET /api/appointments`
-- `GET /api/appointments/availability?date=2026-04-06&treatment=massage`
-- `POST /api/appointments`
-- `PATCH /api/appointments/:id/cancel`
-- `GET /api/product-orders`
-- `POST /api/product-orders/:employee`
-- `PATCH /api/product-orders/:employee/:index`
-- `DELETE /api/product-orders/:employee/:index`
-- `GET /api/reviews`
-- `POST /api/reviews/:employee`
-- `GET /api/sales/daily?date=2026-04-06`
-- `GET /api/sales/monthly?month=2026-04`
-- `GET /api/sales/treatments`
-
-Admin akcije šalju header:
+Nakon pokretanja početnog seeda dostupan je administratorski račun:
 
 ```text
-x-user-role: Admin
+Administrator
+Korisničko ime: Tara
+Lozinka: tara
+```
+
+```text
+Kozmetičar
+Korisničko ime: Luna
+Lozinka: luna
+```
+
+```text
+Klijent
+Korisničko ime: Petra
+Lozinka: petra
 ```
